@@ -38,6 +38,7 @@ RUN set -eux; \
     cd /opt/claw-code; \
     git checkout "${CLAW_CODE_REF}"; \
     git apply /build/patches/claw-fix-stream-newlines.patch; \
+    git apply /build/patches/claw-add-think-block-filter.patch; \
     git apply /build/patches/claw-fix-openai-prefix-strip.patch; \
     cd rust; \
     grep -q '"rustls-tls"' crates/api/Cargo.toml; \

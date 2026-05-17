@@ -1,26 +1,14 @@
 diff --git a/rust/crates/rusty-claude-cli/src/render.rs b/rust/crates/rusty-claude-cli/src/render.rs
-index 24b77d0..9f3715a 100644
+index 24b77d0..4468bff 100644
 --- a/rust/crates/rusty-claude-cli/src/render.rs
 +++ b/rust/crates/rusty-claude-cli/src/render.rs
-@@ -600,16 +600,26 @@ impl TerminalRenderer {
- #[derive(Debug, Default, Clone, PartialEq, Eq)]
- pub struct MarkdownStreamState {
-     pending: String,
-+    in_think_block: bool,
- }
-
- impl MarkdownStreamState {
-     #[must_use]
-     pub fn push(&mut self, renderer: &TerminalRenderer, delta: &str) -> Option<String> {
--        self.pending.push_str(delta);
-+        let filtered = filter_think_content(delta, &mut self.in_think_block);
-+        self.pending.push_str(&filtered);
+@@ -609,7 +609,15 @@ impl MarkdownStreamState {
          let split = find_stream_safe_boundary(&self.pending)?;
          let ready = self.pending[..split].to_string();
          self.pending.drain(..split);
 -        Some(renderer.markdown_to_ansi(&ready))
 +        let rendered = renderer.markdown_to_ansi(&ready);
-+        // render_markdown strips trailing newlines via trim_end(); restore them
++        // markdown_to_ansi strips trailing newlines via trim_end(); restore them
 +        // so consecutive streamed chunks are separated in the terminal output.
 +        let trailing = if ready.ends_with("\n\n") { "\n\n" } else { "\n" };
 +        Some(if rendered.ends_with('\n') {
@@ -29,40 +17,5 @@ index 24b77d0..9f3715a 100644
 +            rendered + trailing
 +        })
      }
-
+ 
      #[must_use]
-@@ -624,6 +634,34 @@ impl MarkdownStreamState {
-     }
- }
-
-+/// Strip `<think>…</think>` blocks that thinking models (e.g. Qwen3) emit
-+/// as raw SSE content. Because the block may span multiple streaming deltas,
-+/// `in_think` carries the state between calls.
-+fn filter_think_content(text: &str, in_think: &mut bool) -> String {
-+    let mut output = String::new();
-+    let mut s = text;
-+    loop {
-+        if *in_think {
-+            if let Some(pos) = s.find("</think>") {
-+                *in_think = false;
-+                s = &s[pos + "</think>".len()..];
-+                s = s.trim_start_matches('\n');
-+            } else {
-+                break;
-+            }
-+        } else if let Some(pos) = s.find("<think>") {
-+            output.push_str(&s[..pos]);
-+            *in_think = true;
-+            s = &s[pos + "<think>".len()..];
-+            s = s.trim_start_matches('\n');
-+        } else {
-+            output.push_str(s);
-+            break;
-+        }
-+    }
-+    output
-+}
-+
- fn apply_code_block_background(line: &str) -> String {
-     let trimmed = line.trim_end_matches('\n');
-     let trailing_newline = if trimmed.len() == line.len() {
