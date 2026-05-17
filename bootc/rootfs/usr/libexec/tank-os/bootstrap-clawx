@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+clawx_home="${HOME:-/var/home/clawx}/.clawx"
+workspace_dir="${HOME:-/var/home/clawx}/workspaces"
+
+umask 077
+mkdir -p "$clawx_home" "$workspace_dir"
+
+# Build a merged CA bundle: system trust anchors + proxy CA cert.
+# Compiled binaries (Go, Rust/openssl, etc.) read the system CA bundle path
+# directly and are unaffected by NODE_EXTRA_CA_CERTS or SSL_CERT_FILE pointing
+# to a proxy-cert-only file. Merging here ensures they also trust the MITM
+# proxy certificate without losing trust in any real CA.
+merged_bundle="$clawx_home/ca-bundle.crt"
+if podman secret inspect proxy_ca_cert >/dev/null 2>&1; then
+    proxy_ca=$(podman secret inspect proxy_ca_cert --showsecret --format '{{.SecretData}}' 2>/dev/null || true)
+    if [[ -n "$proxy_ca" ]]; then
+        system_bundle=""
+        for candidate in \
+            /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem \
+            /etc/pki/tls/certs/ca-bundle.crt \
+            /etc/ssl/certs/ca-certificates.crt; do
+            if [[ -f "$candidate" ]]; then
+                system_bundle="$candidate"
+                break
+            fi
+        done
+        if [[ -n "$system_bundle" ]]; then
+            { cat "$system_bundle"; printf '\n%s\n' "$proxy_ca"; } > "$merged_bundle"
+        else
+            printf '%s\n' "$proxy_ca" > "$merged_bundle"
+        fi
+    fi
+else
+    rm -f "$merged_bundle"
+fi
+
+# Login to the container registry for pulling the clawx-runtime image.
+# Registry is derived from the Image= line in the Quadlet unit so this works
+# regardless of which registry the image was pushed to.
+if podman secret inspect gitea_registry_password >/dev/null 2>&1; then
+    _image_line=$(grep -m1 '^Image=' /etc/containers/systemd/users/1000/clawx.container 2>/dev/null || true)
+    if [[ -n "$_image_line" ]]; then
+        _registry="${_image_line#Image=}"
+        _registry="${_registry%%/*}"
+        _user=$(podman secret inspect gitea_registry_user --showsecret --format '{{.SecretData}}' 2>/dev/null || true)
+        _pass=$(podman secret inspect gitea_registry_password --showsecret --format '{{.SecretData}}' 2>/dev/null || true)
+        if [[ -n "$_pass" ]]; then
+            if ! printf '%s\n' "$_pass" | podman login "$_registry" \
+                --username "${_user:-clawx}" \
+                --password-stdin 2>&1; then
+                echo "bootstrap-clawx: registry login to $_registry failed; image pull may fail if not cached" >&2
+            fi
+        fi
+    fi
+fi
+
+# Remove any existing container so Podman always creates it fresh.
+# :Z then relabels volume files to the new container's MCS pair on every start.
+podman rm -f clawx 2>/dev/null || true

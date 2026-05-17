@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+config_dir="${HOME:-/var/home/clawx}/.config/service-gator"
+scope_file="$config_dir/scopes.json"
+
+umask 077
+mkdir -p "$config_dir"
+
+if [[ ! -f "$scope_file" ]]; then
+  cat >"$scope_file" <<'JSON'
+{
+  "scopes": {
+    "gh": {
+      "repos": {}
+    },
+    "gitlab": {
+      "projects": {}
+    },
+    "forgejo": [],
+    "jira": {
+      "projects": {}
+    }
+  }
+}
+JSON
+fi

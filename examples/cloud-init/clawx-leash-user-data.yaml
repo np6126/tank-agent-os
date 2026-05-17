@@ -1,0 +1,90 @@
+#cloud-config
+#
+# tank-claw-os provisioning template for isolated deployment behind leash.
+#
+# Network topology:
+#   - Agent VM is on the isolated network (vmbr1) ONLY — no direct LAN access.
+#   - All agent (clawx) outbound traffic is enforced through leash at REPLACE_WITH_LEASH_IP:8080.
+#   - service-gator retains direct outbound via the leash proxy VM acting as NAT gateway.
+#
+# Prerequisites before provisioning:
+#   1. Leash proxy VM is running on the isolated network with IP REPLACE_WITH_LEASH_IP.
+#      setup.sh must have been run (enables IP forwarding + NAT for isolated → internet).
+#   2. Extract the leash CA certificate:
+#        podman exec leash cat /root/.mitmproxy/mitmproxy-ca-cert.pem
+#      Paste the PEM output into the ca_cert field below.
+#   3. If your Gitea/Forgejo instance is on a LAN hostname that requires a local DNS
+#      rewrite, add it to the /etc/hosts runcmd below.
+#
+# Replace all REPLACE_WITH_* placeholders before use.
+#
+# SSH access: ssh clawx@REPLACE_WITH_AGENT_IP (from the proxy VM or any machine on the isolated network).
+
+network:
+  version: 2
+  ethernets:
+    id0:
+      match:
+        name: "en*"
+      addresses:
+        - REPLACE_WITH_AGENT_IP/24
+      routes:
+        - to: default
+          via: REPLACE_WITH_LEASH_IP
+      nameservers:
+        addresses: [9.9.9.9]
+
+users:
+  - name: clawx
+    gecos: tank-claw-os agent user
+    shell: /bin/bash
+    lock_passwd: true
+    ssh_authorized_keys:
+      - REPLACE_WITH_YOUR_PUBLIC_KEY
+
+write_files:
+  # System-level proxy config read by clawx-nftables.service at boot.
+  - path: /etc/clawx/proxy.env
+    owner: root:root
+    permissions: '0644'
+    content: |
+      CLAWX_PROXY_URL=http://REPLACE_WITH_LEASH_IP:8080
+      CLAWX_PROXY_PORT=8080
+
+  # leash CA certificate — written to a temp path, then loaded as a
+  # Podman secret by the runcmd below so it never persists in plaintext.
+  - path: /tmp/proxy-ca.pem
+    owner: root:root
+    permissions: '0644'
+    content: |
+      -----BEGIN CERTIFICATE-----
+      REPLACE_WITH_LEASH_CA_CERT_PEM_CONTENT
+      -----END CERTIFICATE-----
+
+runcmd:
+  - [loginctl, enable-linger, clawx]
+
+  # Optional: add /etc/hosts entries for LAN hostnames not resolvable from
+  # the isolated network (e.g. a self-hosted Gitea with a local DNS rewrite).
+  # - [sh, -c, 'echo "192.168.x.x your-gitea.example.internal" >> /etc/hosts']
+
+  # Install leash CA into the system trust store so podman pull trusts the
+  # MITM proxy when pulling container images through the egress proxy.
+  - [cp, /tmp/proxy-ca.pem, /etc/pki/ca-trust/source/anchors/leash-ca.pem]
+  - [update-ca-trust]
+
+  # Create Podman secrets as the clawx user.
+  - [sudo, -iu, clawx, sh, -c,
+     'printf "%s" "http://REPLACE_WITH_LEASH_IP:8080" | podman secret create proxy_url -']
+  - [sudo, -iu, clawx, sh, -c,
+     'cat /tmp/proxy-ca.pem | podman secret create proxy_ca_cert -']
+  - [rm, -f, /tmp/proxy-ca.pem]
+
+  # Wire secrets into the clawx Quadlet drop-in.
+  - [sudo, -iu, clawx, tank-clawx-secrets]
+
+  # Apply nftables isolation rules (reads /etc/clawx/proxy.env).
+  - [systemctl, restart, clawx-nftables.service]
+
+  # Restart containers to pick up proxy env vars.
+  - [sudo, -iu, clawx, systemctl, --user, restart, clawx.service, service-gator.service]

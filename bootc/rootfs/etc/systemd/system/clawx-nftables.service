@@ -1,0 +1,17 @@
+[Unit]
+Description=Network isolation rules for clawx agent container
+Documentation=https://github.com/ultraworkers/tank-claw-os
+After=network-online.target nftables.service
+Before=user@1000.service
+Wants=network-online.target nftables.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=-/etc/clawx/proxy.env
+ExecStart=/usr/libexec/tank-os/setup-clawx-nftables
+ExecStop=/bin/bash -c 'nft delete table inet clawx-isolation 2>/dev/null || true'
+
+[Install]
+WantedBy=multi-user.target

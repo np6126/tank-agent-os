@@ -1,0 +1,55 @@
+{
+  "scopes": {
+    "gh": {
+      "repos": {
+        "owner/repo": {
+          "read": true,
+          "push-new-branch": false,
+          "create-draft": false,
+          "pending-review": false,
+          "write": false,
+          "require-fork": false
+        }
+      }
+    },
+
+    "gitlab": {
+      "projects": {
+        "group/project": {
+          "read": true,
+          "push-new-branch": false,
+          "create-draft": false,
+          "approve": false,
+          "write": false,
+          "require-fork": false
+        }
+      }
+    },
+
+    "forgejo": [
+      {
+        "host": "codeberg.org",
+        "repos": {
+          "owner/repo": {
+            "read": true,
+            "push-new-branch": false,
+            "create-draft": false,
+            "pending-review": false,
+            "write": false,
+            "require-fork": false
+          }
+        }
+      }
+    ],
+
+    "jira": {
+      "projects": {
+        "PROJECT_KEY": {
+          "read": true,
+          "create": false,
+          "write": false
+        }
+      }
+    }
+  }
+}

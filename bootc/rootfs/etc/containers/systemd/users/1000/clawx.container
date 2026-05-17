@@ -1,0 +1,27 @@
+[Unit]
+Description=claw-code runtime on tank-os rootless Podman architecture
+
+[Container]
+Image=quay.io/fedora/fedora:placeholder
+ContainerName=clawx
+Pull=missing
+RunInit=true
+UserNS=keep-id
+User=%U:%G
+Volume=/usr/local/bin/claw:/usr/local/bin/claw:ro
+Volume=/etc/clawx/CLAUDE.md:/home/clawx/CLAUDE.md:ro
+Volume=%h/.clawx:/home/clawx/.clawx:Z
+Volume=%h/workspaces:/home/clawx/workspaces:Z
+Network=clawx-isolated.network
+Environment=HOME=/home/clawx
+Environment=TERM=xterm-256color
+WorkingDir=/home/clawx/workspaces
+Exec=sleep infinity
+
+[Service]
+ExecStartPre=/usr/libexec/tank-os/bootstrap-clawx
+TimeoutStartSec=300
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

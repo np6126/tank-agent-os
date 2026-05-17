@@ -1,0 +1,191 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CLAWX_UID="${CLAWX_UID:-1000}"
+CLAWX_PROXY_URL="${CLAWX_PROXY_URL:-}"
+CLAWX_PROXY_PORT="${CLAWX_PROXY_PORT:-}"
+CLAWX_USER="${CLAWX_USER:-clawx}"
+CA_ANCHOR="/etc/pki/ca-trust/source/anchors/clawx-proxy-ca.pem"
+
+install_proxy_ca() {
+    local cert
+    cert=$(runuser -u "$CLAWX_USER" -- \
+        /usr/bin/podman secret inspect proxy_ca_cert \
+        --showsecret --format '{{.SecretData}}' 2>/dev/null || true)
+    if [[ -n "$cert" ]]; then
+        printf '%s\n' "$cert" > "$CA_ANCHOR"
+        update-ca-trust extract
+        echo "clawx-nftables: proxy CA cert installed into system trust store"
+    elif [[ -f "$CA_ANCHOR" ]]; then
+        rm -f "$CA_ANCHOR"
+        update-ca-trust extract
+        echo "clawx-nftables: proxy CA cert removed from system trust store"
+    fi
+}
+
+# Determine the cgroup path for service-gator to exempt it from the output rules.
+# Both containers run as the same UID, but live in different systemd service cgroups:
+#   user.slice/user-N.slice/user@N.service/app.slice/service-gator.service  (level 5 on Fedora)
+#
+# nftables socket cgroupv2 requires the FULL path relative to /sys/fs/cgroup, not just the leaf name.
+SVC_GATOR_LEAF="service-gator.service"
+
+find_cgroup_path() {
+    local service_leaf="$1"
+    local uid="$2"
+    local base="/sys/fs/cgroup/user.slice/user-${uid}.slice"
+    local path
+    path=$(find "$base" -type d -name "$service_leaf" 2>/dev/null | head -1)
+    if [[ -n "$path" ]]; then
+        printf '%s' "${path#/sys/fs/cgroup/}"
+    fi
+}
+
+SVC_GATOR_CGPATH=$(find_cgroup_path "$SVC_GATOR_LEAF" "$CLAWX_UID")
+
+# Build the optional cgroup exemption line.
+# The cgroup only exists after service-gator has started; at early boot it is absent.
+# service-gator.container reloads this service via ExecStartPost once its cgroup is live.
+if [[ -n "$SVC_GATOR_CGPATH" ]]; then
+    SVC_GATOR_LEVEL=$(echo "$SVC_GATOR_CGPATH" | awk -F/ '{print NF}')
+    CGROUP_EXEMPT="        socket cgroupv2 level ${SVC_GATOR_LEVEL} \"${SVC_GATOR_CGPATH}\" return"
+else
+    CGROUP_EXEMPT=""
+    SVC_GATOR_LEVEL=""
+    echo "clawx-nftables: service-gator cgroup not yet available; exemption omitted (will reload after service-gator starts)"
+fi
+
+# Remove any existing table first
+nft delete table inet clawx-isolation 2>/dev/null || true
+
+if [[ -z "$CLAWX_PROXY_URL" ]]; then
+    # No proxy configured: install deny-all baseline for clawx UID.
+    # This is active regardless of which networks the clawx container uses,
+    # preventing accidental outbound access if a pasta network is added later.
+    # service-gator (same UID, different cgroup) is exempt so it retains internet access.
+    nft -f - <<NFTEOF
+table inet clawx-isolation {
+    chain output {
+        type filter hook output priority filter; policy accept;
+${CGROUP_EXEMPT}
+        meta skuid != ${CLAWX_UID} return
+        ct state established,related accept
+        oif "lo" accept
+        reject with icmp type host-prohibited
+    }
+}
+NFTEOF
+    echo "clawx-nftables: deny-all active for UID ${CLAWX_UID}" \
+         "(no proxy configured; service-gator exempt at cgroup level ${SVC_GATOR_LEVEL})"
+    install_proxy_ca
+    exit 0
+fi
+
+# Proxy configured: full isolation with proxy allowance.
+
+# Parse host and port from proxy URL
+PROXY_HOST=$(printf '%s' "$CLAWX_PROXY_URL" | sed 's|^[a-z]*://||;s|[:/].*||')
+if [[ -z "$CLAWX_PROXY_PORT" ]]; then
+    CLAWX_PROXY_PORT=$(printf '%s' "$CLAWX_PROXY_URL" | sed -n 's|^[a-z]*://[^:]*:\([0-9]*\).*|\1|p')
+    CLAWX_PROXY_PORT="${CLAWX_PROXY_PORT:-8080}"
+fi
+
+if [[ -z "$PROXY_HOST" ]]; then
+    echo "clawx-nftables: could not parse proxy host from CLAWX_PROXY_URL='$CLAWX_PROXY_URL'" >&2
+    exit 1
+fi
+
+# Resolve proxy hostname to addresses
+mapfile -t PROXY_V4 < <(getent ahostsv4 "$PROXY_HOST" 2>/dev/null | awk '{print $1}' | sort -u || true)
+mapfile -t PROXY_V6 < <(getent ahostsv6 "$PROXY_HOST" 2>/dev/null | awk '{print $1}' | sort -u || true)
+
+if [[ ${#PROXY_V4[@]} -eq 0 && ${#PROXY_V6[@]} -eq 0 ]]; then
+    echo "clawx-nftables: DNS resolution failed for proxy host '$PROXY_HOST'" >&2
+    exit 1
+fi
+
+# Build comma-separated address lists for nftables sets
+v4_elements=""
+if [[ ${#PROXY_V4[@]} -gt 0 ]]; then
+    v4_elements=$(printf '%s, ' "${PROXY_V4[@]}"); v4_elements="${v4_elements%, }"
+fi
+v6_elements=""
+if [[ ${#PROXY_V6[@]} -gt 0 ]]; then
+    v6_elements=$(printf '%s, ' "${PROXY_V6[@]}"); v6_elements="${v6_elements%, }"
+fi
+
+# Generate ruleset
+{
+cat <<NFTEOF
+table inet clawx-isolation {
+NFTEOF
+
+if [[ -n "$v4_elements" ]]; then
+cat <<NFTEOF
+    set proxy_v4 {
+        type ipv4_addr
+        flags interval
+        elements = { ${v4_elements} }
+    }
+NFTEOF
+fi
+
+if [[ -n "$v6_elements" ]]; then
+cat <<NFTEOF
+    set proxy_v6 {
+        type ipv6_addr
+        flags interval
+        elements = { ${v6_elements} }
+    }
+NFTEOF
+fi
+
+cat <<NFTEOF
+    chain output {
+        type filter hook output priority filter; policy accept;
+
+        # Exempt service-gator: same UID 1000 as clawx, but different service cgroup.
+        # pasta processes for each Quadlet container inherit their service's cgroup,
+        # so cgroup-level matching correctly separates the two containers.
+${CGROUP_EXEMPT}
+
+        # Apply remaining rules only to the clawx user
+        meta skuid != ${CLAWX_UID} return
+
+        # Allow responses to already-established connections
+        ct state established,related accept
+
+        # Allow loopback: service-gator bridge traffic and local DNS
+        oif "lo" accept
+NFTEOF
+
+if [[ -n "$v4_elements" ]]; then
+cat <<NFTEOF
+
+        # Allow egress proxy (IPv4)
+        ip daddr @proxy_v4 tcp dport ${CLAWX_PROXY_PORT} accept
+NFTEOF
+fi
+
+if [[ -n "$v6_elements" ]]; then
+cat <<NFTEOF
+
+        # Allow egress proxy (IPv6)
+        ip6 daddr @proxy_v6 tcp dport ${CLAWX_PROXY_PORT} accept
+NFTEOF
+fi
+
+cat <<NFTEOF
+
+        # Block all other outbound from clawx — agent must use the egress proxy
+        reject with icmp type host-prohibited
+    }
+}
+NFTEOF
+} | nft -f -
+
+echo "clawx-nftables: isolation active" \
+     "(proxy ${PROXY_HOST}:${CLAWX_PROXY_PORT}," \
+     "service-gator exempt at cgroup level ${SVC_GATOR_LEVEL})"
+
+install_proxy_ca

@@ -1,0 +1,61 @@
+#cloud-config
+#
+# tank-claw-os provisioning template with egress proxy configuration.
+#
+# Prerequisites (on the proxy host, before provisioning this VM):
+#   1. Build and start an egress proxy that exposes an HTTP CONNECT endpoint
+#      with allowlist enforcement (e.g. leash: https://github.com/np6126/leash).
+#   2. Extract the mitmproxy CA certificate from the proxy container, e.g. for leash:
+#        podman exec leash cat /root/.mitmproxy/mitmproxy-ca-cert.pem
+#      Copy the PEM output and paste it into the ca_cert field below.
+#
+# Replace all REPLACE_WITH_* placeholders before use.
+
+users:
+  - name: clawx
+    gecos: tank-claw-os agent user
+    shell: /bin/bash
+    lock_passwd: true
+    ssh_authorized_keys:
+      - ssh-ed25519 REPLACE_WITH_YOUR_PUBLIC_KEY tank-claw-os
+
+write_files:
+  # System-level proxy config read by clawx-nftables.service at boot.
+  # Tells the nftables setup script which proxy host to allow outbound to.
+  - path: /etc/clawx/proxy.env
+    owner: root:root
+    permissions: '0644'
+    content: |
+      CLAWX_PROXY_URL=http://REPLACE_WITH_PROXY_HOST:8080
+      CLAWX_PROXY_PORT=8080
+
+  # mitmproxy CA certificate — written to a temp path, then loaded as a
+  # Podman secret by the runcmd below so it never persists in plaintext.
+  - path: /tmp/proxy-ca.pem
+    owner: root:root
+    permissions: '0600'
+    content: |
+      -----BEGIN CERTIFICATE-----
+      REPLACE_WITH_MITMPROXY_CA_CERT_PEM_CONTENT
+      -----END CERTIFICATE-----
+
+runcmd:
+  - [loginctl, enable-linger, clawx]
+
+  # Create the proxy_url Podman secret as the clawx user.
+  - [sudo, -iu, clawx, sh, -c,
+     'printf "%s" "http://REPLACE_WITH_PROXY_HOST:8080" | podman secret create proxy_url -']
+
+  # Create the proxy_ca_cert Podman secret, then remove the plaintext file.
+  - [sudo, -iu, clawx, sh, -c,
+     'cat /tmp/proxy-ca.pem | podman secret create proxy_ca_cert -']
+  - [rm, -f, /tmp/proxy-ca.pem]
+
+  # Regenerate the clawx Quadlet drop-in to wire proxy secrets into the container.
+  - [sudo, -iu, clawx, tank-clawx-secrets]
+
+  # Apply updated nftables isolation rules (reads /etc/clawx/proxy.env).
+  - [systemctl, restart, clawx-nftables.service]
+
+  # Restart containers to pick up new network config and proxy env vars.
+  - [sudo, -iu, clawx, systemctl, --user, restart, clawx.service, service-gator.service]

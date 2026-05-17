@@ -1,0 +1,48 @@
+diff --git a/rust/crates/api/src/providers/mod.rs b/rust/crates/api/src/providers/mod.rs
+index af1776f..f5741f4 100644
+--- a/rust/crates/api/src/providers/mod.rs
++++ b/rust/crates/api/src/providers/mod.rs
+@@ -254,7 +254,7 @@ pub fn metadata_for_model(model: &str) -> Option<ProviderMetadata> {
+     // route to the correct provider regardless of which auth env vars are set.
+     // Without this, detect_provider_kind falls through to the auth-sniffer
+     // order and misroutes to Anthropic if ANTHROPIC_API_KEY is present.
+-    if canonical.starts_with("openai/") || canonical.starts_with("gpt-") {
++    if canonical.starts_with("openai/") || canonical.starts_with("local/") || canonical.starts_with("gpt-") {
+         return Some(ProviderMetadata {
+             provider: ProviderKind::OpenAi,
+             auth_env: "OPENAI_API_KEY",
+diff --git a/rust/crates/api/src/providers/openai_compat.rs b/rust/crates/api/src/providers/openai_compat.rs
+index 1d53f12..06d677a 100644
+--- a/rust/crates/api/src/providers/openai_compat.rs
++++ b/rust/crates/api/src/providers/openai_compat.rs
+@@ -904,7 +904,7 @@ fn strip_routing_prefix(model: &str) -> &str {
+         let prefix = &model[..pos];
+         // Only strip if the prefix before "/" is a known routing prefix,
+         // not if "/" appears in the middle of the model name for other reasons.
+-        if matches!(prefix, "openai" | "xai" | "grok" | "qwen" | "kimi") {
++        if matches!(prefix, "openai" | "local" | "xai" | "grok" | "qwen" | "kimi") {
+             &model[pos + 1..]
+         } else {
+             model
+@@ -926,20 +926,10 @@ fn wire_model_for_base_url<'a>(
+     let lowered_prefix = prefix.to_ascii_lowercase();
+ 
+     if lowered_prefix == "openai" {
+-        let trimmed_base_url = base_url.trim_end_matches('/');
+-        let default_openai = DEFAULT_OPENAI_BASE_URL.trim_end_matches('/');
+-        if config.provider_name == "OpenAI" && trimmed_base_url != default_openai {
+-            // OpenAI-compatible gateways such as OpenRouter commonly use
+-            // slash-containing model slugs (for example `openai/gpt-4.1-mini`).
+-            // Preserve the slug when the user configured a non-default OpenAI
+-            // base URL; the prefix still routed to the OpenAI-compatible client,
+-            // but the gateway owns the final model namespace.
+-            return Cow::Borrowed(model);
+-        }
+         return Cow::Borrowed(&model[pos + 1..]);
+     }
+ 
+-    if matches!(lowered_prefix.as_str(), "xai" | "grok" | "qwen" | "kimi") {
++    if matches!(lowered_prefix.as_str(), "local" | "xai" | "grok" | "qwen" | "kimi") {
+         return Cow::Borrowed(&model[pos + 1..]);
+     }
+ 
