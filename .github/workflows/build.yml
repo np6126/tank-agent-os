@@ -1,0 +1,46 @@
+name: Build and push bootc image
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push clawx-runtime image
+        run: |
+          docker build \
+            -f bootc/clawx-runtime/Containerfile \
+            -t ghcr.io/${{ github.repository_owner }}/clawx-runtime:latest \
+            bootc/clawx-runtime/
+          docker push ghcr.io/${{ github.repository_owner }}/clawx-runtime:latest
+
+      - name: Build bootc image
+        run: |
+          docker build \
+            -f bootc/Containerfile \
+            --build-arg CLAWX_RUNTIME_IMAGE=ghcr.io/${{ github.repository_owner }}/clawx-runtime \
+            --build-arg CLAWX_RUNTIME_REF=latest \
+            -t ghcr.io/${{ github.repository_owner }}/tank-claw-os:latest \
+            -t ghcr.io/${{ github.repository_owner }}/tank-claw-os:${{ github.sha }} \
+            bootc/
+
+      - name: Push tank-claw-os
+        run: |
+          docker push ghcr.io/${{ github.repository_owner }}/tank-claw-os:latest
+          docker push ghcr.io/${{ github.repository_owner }}/tank-claw-os:${{ github.sha }}

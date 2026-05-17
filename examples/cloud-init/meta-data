@@ -1,0 +1,4 @@
+# Must be unique per VM — change this on every rebuild, otherwise
+# cloud-init skips re-running. Use any unique string (e.g. a timestamp).
+instance-id: clawx-REPLACE-WITH-UNIQUE-ID
+local-hostname: clawx

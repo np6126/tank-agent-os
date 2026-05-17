@@ -1,0 +1,133 @@
+# ── Version pins ──────────────────────────────────────────────────────────────
+# All image references and commit hashes are defined here as ARGs so they can
+# be overridden at build time with --build-arg without editing the Containerfile.
+ARG FEDORA_BOOTC_IMAGE=quay.io/fedora/fedora-bootc
+ARG FEDORA_BOOTC_REF=latest
+ARG CLAW_CODE_REPO=https://github.com/ultraworkers/claw-code.git
+ARG CLAW_CODE_REF=63ce483c2788a96f470acd4625d8540292bdd16e
+# Pinned to a digest so a tag move cannot silently change the running image.
+ARG SERVICE_GATOR_IMAGE=ghcr.io/cgwalters/service-gator
+ARG SERVICE_GATOR_REF=sha256:23a4202effff4fee23b0fe604c3415c4ffd56e631fba9d070cdeaa833cc5cfb3
+# clawx runtime container — build bootc/clawx-runtime/Containerfile and push
+# before updating this reference. Tag only (not digest); bump together with
+# FEDORA_BOOTC_REF when doing a Fedora release upgrade.
+ARG CLAWX_RUNTIME_IMAGE=ghcr.io/np6126/clawx-runtime
+ARG CLAWX_RUNTIME_REF=latest
+# ──────────────────────────────────────────────────────────────────────────────
+
+FROM ${FEDORA_BOOTC_IMAGE}:${FEDORA_BOOTC_REF} AS claw-builder
+
+# Re-declare so the build stage inherits the values.
+ARG CLAW_CODE_REPO
+ARG CLAW_CODE_REF
+ENV CARGO_HOME=/var/tmp/cargo
+
+COPY patches/ /build/patches/
+
+RUN set -eux; \
+    dnf -y install \
+      cargo \
+      gcc \
+      git \
+      make \
+      openssl-devel \
+      pkgconf-pkg-config \
+      rust; \
+    install -d -m 0755 "${CARGO_HOME}"; \
+    git clone "${CLAW_CODE_REPO}" /opt/claw-code; \
+    cd /opt/claw-code; \
+    git checkout "${CLAW_CODE_REF}"; \
+    git apply /build/patches/claw-fix-stream-newlines.patch; \
+    git apply /build/patches/claw-fix-openai-prefix-strip.patch; \
+    cd rust; \
+    grep -q '"rustls-tls"' crates/api/Cargo.toml; \
+    sed -i 's/features = \["json", "rustls-tls"\]/features = ["json", "rustls-tls-native-roots"]/' crates/api/Cargo.toml; \
+    cargo build --workspace --release; \
+    install -D -m 0755 target/release/claw /usr/local/bin/claw
+
+FROM ${FEDORA_BOOTC_IMAGE}:${FEDORA_BOOTC_REF}
+
+# Re-declare so this stage inherits the values from the top-level ARG block.
+ARG SERVICE_GATOR_IMAGE
+ARG SERVICE_GATOR_REF
+ARG CLAWX_RUNTIME_IMAGE
+ARG CLAWX_RUNTIME_REF
+
+LABEL containers.bootc=1 \
+  org.opencontainers.image.title="tank-claw-os" \
+  org.opencontainers.image.description="Fedora bootc image for claw-code on the tank-os rootless Podman architecture" \
+  org.opencontainers.image.source="https://github.com/np6126/tank-claw-os.git"
+
+ARG CLAWX_UID=1000
+ARG CLAWX_GID=1000
+ARG CLAWX_SUBID_START=100000
+ARG CLAWX_SUBID_COUNT=65536
+
+RUN set -eux; \
+    dnf -y install \
+      cloud-init \
+      nftables \
+      openssh-server \
+      podman \
+      python3 \
+      qemu-guest-agent \
+      shadow-utils \
+      sudo \
+      vim-enhanced; \
+    dnf clean all; \
+    rm -rf /var/cache/dnf /var/log/dnf*; \
+    getent group clawx >/dev/null || groupadd -g "${CLAWX_GID}" clawx; \
+    id -u clawx >/dev/null 2>&1 || \
+      useradd -u "${CLAWX_UID}" -g "${CLAWX_GID}" -m -d /var/home/clawx -s /bin/bash clawx; \
+    grep -q '^clawx:' /etc/subuid 2>/dev/null || \
+      printf 'clawx:%s:%s\n' "${CLAWX_SUBID_START}" "${CLAWX_SUBID_COUNT}" >> /etc/subuid; \
+    grep -q '^clawx:' /etc/subgid 2>/dev/null || \
+      printf 'clawx:%s:%s\n' "${CLAWX_SUBID_START}" "${CLAWX_SUBID_COUNT}" >> /etc/subgid; \
+    install -d -m 0700 -o clawx -g clawx /var/home/clawx/.clawx; \
+    install -d -m 0700 -o clawx -g clawx /var/home/clawx/workspaces; \
+    install -d -m 0755 /etc/clawx; \
+    install -d -m 0755 /var/lib/systemd/linger; \
+    touch /var/lib/systemd/linger/clawx
+
+COPY rootfs/ /
+COPY --from=claw-builder /usr/local/bin/claw /usr/local/bin/claw
+
+# Substitute version-pin ARGs into the Quadlet unit files that were just copied
+# from rootfs/. The rootfs/ copies carry placeholder values; the ARG defaults at
+# the top of this file are the single source of truth for the actual pins.
+RUN set -eux; \
+    sed -i \
+      "s|^Image=ghcr.io/cgwalters/service-gator.*|Image=${SERVICE_GATOR_IMAGE}@${SERVICE_GATOR_REF}|" \
+      /etc/containers/systemd/users/1000/service-gator.container; \
+    sed -i \
+      "s|^Image=quay.io/fedora/fedora:placeholder$|Image=${CLAWX_RUNTIME_IMAGE}:${CLAWX_RUNTIME_REF}|" \
+      /etc/containers/systemd/users/1000/clawx.container
+
+RUN set -eux; \
+    chmod 0755 \
+      /usr/local/bin/claw \
+      /usr/local/bin/clawx \
+      /usr/local/bin/tank-os-version \
+      /usr/local/bin/tank-clawx-secrets \
+      /usr/libexec/tank-os/bootstrap-clawx \
+      /usr/libexec/tank-os/bootstrap-service-gator \
+      /usr/libexec/tank-os/setup-clawx-nftables \
+      /usr/libexec/tank-os/sync-podman-secrets; \
+    chmod 0644 \
+      /usr/share/tank-os/agent-config.env.example \
+      /usr/share/tank-os/scopes.json.example \
+      /etc/clawx/CLAUDE.md; \
+    chmod 0440 /etc/sudoers.d/clawx; \
+    chown -R clawx:clawx /var/home/clawx; \
+    systemctl enable sshd.service nftables.service clawx-nftables.service qemu-guest-agent.service; \
+    systemctl mask NetworkManager-wait-online.service; \
+    for unit in \
+      cloud-init-local.service \
+      cloud-init-network.service \
+      cloud-config.service \
+      cloud-final.service; \
+    do \
+      if [ -e "/usr/lib/systemd/system/${unit}" ] || [ -e "/etc/systemd/system/${unit}" ]; then \
+        systemctl enable "${unit}"; \
+      fi; \
+    done

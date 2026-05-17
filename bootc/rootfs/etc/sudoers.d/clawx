@@ -1,0 +1,2 @@
+clawx ALL=(ALL) NOPASSWD: /usr/bin/bootc
+clawx ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart clawx-nftables.service

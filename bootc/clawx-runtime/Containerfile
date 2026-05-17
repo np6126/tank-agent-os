@@ -1,0 +1,81 @@
+ARG FEDORA_CONTAINER_IMAGE=quay.io/fedora/fedora
+ARG FEDORA_CONTAINER_REF=44
+ARG ANDROID_CMDLINE_TOOLS_VERSION=11076708
+ARG GRADLE_VERSION=8.13
+ARG KOTLIN_VERSION=2.1.21
+ARG JAVA_VERSION=21.0.5+11
+
+FROM ${FEDORA_CONTAINER_IMAGE}:${FEDORA_CONTAINER_REF}
+
+ENV ANDROID_HOME=/opt/android-sdk
+ENV JAVA_HOME=/opt/java/21
+ENV PATH="${PATH}:${JAVA_HOME}/bin:${ANDROID_HOME}/cmdline-tools/latest/bin:${ANDROID_HOME}/platform-tools:/opt/gradle/bin:/opt/kotlinc/bin"
+
+RUN set -eux; \
+    dnf -y install \
+      curl \
+      diffutils \
+      findutils \
+      gcc \
+      gcc-c++ \
+      git \
+      htop \
+      iproute \
+      jq \
+      less \
+      lsof \
+      make \
+      nodejs \
+      npm \
+      openssl \
+      procps-ng \
+      python3 \
+      python3-pip \
+      rsync \
+      tree \
+      unzip \
+      util-linux \
+      vim-minimal \
+      yq \
+      zip; \
+    dnf clean all; \
+    rm -rf /var/cache/dnf /var/log/dnf*
+
+ARG ANDROID_CMDLINE_TOOLS_VERSION
+ARG GRADLE_VERSION
+ARG KOTLIN_VERSION
+ARG JAVA_VERSION
+RUN set -eux; \
+    JAVA_ENCODED=$(printf '%s' "${JAVA_VERSION}" | sed 's/+/%2B/g'); \
+    JAVA_FILE=$(printf '%s' "${JAVA_VERSION}" | tr '+' '_'); \
+    ARCH=$(uname -m); \
+    case "${ARCH}" in \
+      x86_64)  JAVA_ARCH="x64" ;; \
+      aarch64) JAVA_ARCH="aarch64" ;; \
+      *) echo "Unsupported arch: ${ARCH}" >&2; exit 1 ;; \
+    esac; \
+    curl -Lo /tmp/jdk.tar.gz \
+      "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-${JAVA_ENCODED}/OpenJDK21U-jdk_${JAVA_ARCH}_linux_hotspot_${JAVA_FILE}.tar.gz"; \
+    mkdir -p "${JAVA_HOME}"; \
+    tar -xzf /tmp/jdk.tar.gz -C "${JAVA_HOME}" --strip-components=1; \
+    rm /tmp/jdk.tar.gz; \
+    curl -Lo /tmp/gradle.zip \
+      "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip"; \
+    unzip -q /tmp/gradle.zip -d /opt; \
+    mv "/opt/gradle-${GRADLE_VERSION}" /opt/gradle; \
+    rm /tmp/gradle.zip; \
+    curl -Lo /tmp/kotlin.zip \
+      "https://github.com/JetBrains/kotlin/releases/download/v${KOTLIN_VERSION}/kotlin-compiler-${KOTLIN_VERSION}.zip"; \
+    unzip -q /tmp/kotlin.zip -d /opt; \
+    rm /tmp/kotlin.zip; \
+    curl -o /tmp/cmdline-tools.zip \
+      "https://dl.google.com/android/repository/commandlinetools-linux-${ANDROID_CMDLINE_TOOLS_VERSION}_latest.zip"; \
+    mkdir -p "${ANDROID_HOME}/cmdline-tools"; \
+    unzip -q /tmp/cmdline-tools.zip -d "${ANDROID_HOME}/cmdline-tools"; \
+    mv "${ANDROID_HOME}/cmdline-tools/cmdline-tools" "${ANDROID_HOME}/cmdline-tools/latest"; \
+    rm /tmp/cmdline-tools.zip; \
+    yes | sdkmanager --licenses; \
+    sdkmanager \
+      "platform-tools" \
+      "build-tools;35.0.0" \
+      "platforms;android-35"

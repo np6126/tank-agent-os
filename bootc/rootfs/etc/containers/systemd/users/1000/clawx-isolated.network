@@ -1,0 +1,5 @@
+[Network]
+Subnet=172.20.0.0/29
+Gateway=172.20.0.1
+DNS=172.20.0.1
+Label=tank-os=clawx-isolated
