@@ -7,7 +7,7 @@ image. Build and push the runtime image first; the bootc image references it
 via `--build-arg`.
 
 ```text
-tank-claw-os/
+tank-agent-os/
 ├── bootc/
 │   ├── Containerfile          ← bootc OS image
 │   ├── clawx-runtime/
@@ -38,7 +38,7 @@ podman build \
   --platform linux/arm64 \
   --build-arg CLAWX_RUNTIME_IMAGE=<your-registry>/clawx-runtime \
   --build-arg CLAWX_RUNTIME_REF=latest \
-  -t localhost/tank-claw-os:latest \
+  -t localhost/tank-agent-os:latest \
   -f bootc/Containerfile \
   bootc
 ```
@@ -50,7 +50,7 @@ podman build \
   --platform linux/amd64 \
   --build-arg CLAWX_RUNTIME_IMAGE=<your-registry>/clawx-runtime \
   --build-arg CLAWX_RUNTIME_REF=latest \
-  -t localhost/tank-claw-os:latest \
+  -t localhost/tank-agent-os:latest \
   -f bootc/Containerfile \
   bootc
 ```
@@ -69,11 +69,11 @@ the unmodified `quay.io/fedora/fedora:44` base image (no development tools).
 ## Build A Disk Image With Podman Desktop
 
 The Podman Desktop BootC extension can build a VM disk image from
-`localhost/tank-claw-os:latest`.
+`localhost/tank-agent-os:latest`.
 
 Recommended local test settings:
 
-- Bootc image: `localhost/tank-claw-os:latest`
+- Bootc image: `localhost/tank-agent-os:latest`
 - Disk image type: `qcow2`
 - Target architecture: `arm64`, `aarch64`, or `amd64`
 - Root filesystem: `xfs`
@@ -87,7 +87,7 @@ Recommended local test settings:
 Create an output directory:
 
 ```bash
-mkdir -p out-tank-claw-os
+mkdir -p out-tank-agent-os
 ```
 
 Optionally create a bootc-image-builder config to inject a local SSH key. Do not
@@ -98,13 +98,13 @@ put private keys or long-lived secrets here.
 > it for production deployments that provision via cloud-init.
 
 ```bash
-cat > out-tank-claw-os/config.json <<'EOF'
+cat > out-tank-agent-os/config.json <<'EOF'
 {
   "customizations": {
     "user": [
       {
         "name": "clawx",
-        "key": "ssh-ed25519 REPLACE_WITH_YOUR_PUBLIC_KEY tank-claw-os",
+        "key": "ssh-ed25519 REPLACE_WITH_YOUR_PUBLIC_KEY tank-agent-os",
         "groups": ["wheel"]
       }
     ]
@@ -118,15 +118,15 @@ Build the QCOW2 with bootc-image-builder:
 ```bash
 podman --connection podman-machine-default-root run \
   --rm \
-  --name tank-claw-os-bootc-image-builder \
+  --name tank-agent-os-bootc-image-builder \
   --tty \
   --privileged \
   --security-opt label=type:unconfined_t \
-  -v "$PWD/out-tank-claw-os:/output/" \
+  -v "$PWD/out-tank-agent-os:/output/" \
   -v /var/lib/containers/storage:/var/lib/containers/storage \
-  -v "$PWD/out-tank-claw-os/config.json:/config.json:ro" \
+  -v "$PWD/out-tank-agent-os/config.json:/config.json:ro" \
   quay.io/centos-bootc/bootc-image-builder:latest \
-  localhost/tank-claw-os:latest \
+  localhost/tank-agent-os:latest \
   --output /output/ \
   --local \
   --progress verbose \
@@ -138,7 +138,7 @@ podman --connection podman-machine-default-root run \
 The resulting disk image is:
 
 ```text
-out-tank-claw-os/qcow2/disk.qcow2
+out-tank-agent-os/qcow2/disk.qcow2
 ```
 
 ## What The Image Installs
@@ -176,7 +176,7 @@ After pushing a new bootc image, switch the VM to the registry ref:
 
 ```bash
 sudo bootc status
-sudo bootc switch --apply <registry>/<namespace>/tank-claw-os:latest
+sudo bootc switch --apply <registry>/<namespace>/tank-agent-os:latest
 ```
 
 After the reboot, future updates against the same tracked tag can use:
@@ -213,9 +213,9 @@ build with an older `ARG` value.
 
    ```bash
    podman build --platform linux/amd64 \
-     -t <your-registry>/tank-claw-os:latest \
+     -t <your-registry>/tank-agent-os:latest \
      -f bootc/Containerfile bootc
-   podman push <your-registry>/tank-claw-os:latest
+   podman push <your-registry>/tank-agent-os:latest
    ```
 
 4. Apply on the running VM:

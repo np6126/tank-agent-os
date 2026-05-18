@@ -55,9 +55,9 @@ ARG CLAWX_RUNTIME_IMAGE
 ARG CLAWX_RUNTIME_REF
 
 LABEL containers.bootc=1 \
-  org.opencontainers.image.title="tank-claw-os" \
+  org.opencontainers.image.title="tank-agent-os" \
   org.opencontainers.image.description="Fedora bootc image for claw-code on the tank-os rootless Podman architecture" \
-  org.opencontainers.image.source="https://github.com/np6126/tank-claw-os.git"
+  org.opencontainers.image.source="https://github.com/np6126/tank-agent-os.git"
 
 ARG CLAWX_UID=1000
 ARG CLAWX_GID=1000

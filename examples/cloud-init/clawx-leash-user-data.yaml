@@ -1,6 +1,6 @@
 #cloud-config
 #
-# tank-claw-os provisioning template for isolated deployment behind leash.
+# tank-agent-os provisioning template for isolated deployment behind leash.
 #
 # Network topology:
 #   - Agent VM is on the isolated network (vmbr1) ONLY — no direct LAN access.
@@ -36,7 +36,7 @@ network:
 
 users:
   - name: clawx
-    gecos: tank-claw-os agent user
+    gecos: tank-agent-os agent user
     shell: /bin/bash
     lock_passwd: true
     ssh_authorized_keys:

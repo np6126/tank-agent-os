@@ -1,6 +1,6 @@
 # First Boot
 
-Steps to go from a freshly provisioned tank-claw-os VM to a working agent
+Steps to go from a freshly provisioned tank-agent-os VM to a working agent
 session. Complete them in order.
 
 ## 1. Verify The VM

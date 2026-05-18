@@ -1,6 +1,6 @@
 # Model Providers And Secrets
 
-tank-claw-os keeps model provider keys out of the image. Users provide
+tank-agent-os keeps model provider keys out of the image. Users provide
 non-secret runtime settings through neutral `AGENT_*` values and provide keys as
 rootless Podman secrets owned by the `clawx` user.
 

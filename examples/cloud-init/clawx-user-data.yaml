@@ -1,11 +1,11 @@
 #cloud-config
 users:
   - name: clawx
-    gecos: tank-claw-os agent user
+    gecos: tank-agent-os agent user
     shell: /bin/bash
     lock_passwd: true
     ssh_authorized_keys:
-      - ssh-ed25519 REPLACE_WITH_YOUR_PUBLIC_KEY tank-claw-os
+      - ssh-ed25519 REPLACE_WITH_YOUR_PUBLIC_KEY tank-agent-os
 
 runcmd:
   - [loginctl, enable-linger, clawx]

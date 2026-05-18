@@ -1,4 +1,4 @@
-# tank-claw-os
+# tank-agent-os
 
 Fedora bootc image for running `claw-code` on the original tank-os rootless
 Podman appliance architecture.
@@ -7,7 +7,7 @@ Podman appliance architecture.
 
 This project stands on the shoulders of two upstream projects:
 
-- **[LobsterTrap/tank-os](https://github.com/LobsterTrap/tank-os)** — the OS architecture this repo is based on: Fedora bootc, rootless Podman Quadlets, cloud-init provisioning, service-gator integration, and the rootless secrets model. tank-claw-os is a direct fork of that foundation.
+- **[LobsterTrap/tank-os](https://github.com/LobsterTrap/tank-os)** — the OS architecture this repo is based on: Fedora bootc, rootless Podman Quadlets, cloud-init provisioning, service-gator integration, and the rootless secrets model. tank-agent-os is a direct fork of that foundation.
 - **[ultraworkers/claw-code](https://github.com/ultraworkers/claw-code)** — the agentic runtime that replaces openclaw in this fork. Built as a Rust CLI, compiled from a pinned commit into the bootc image.
 
 bootc turns a container image into a bootable, updateable Linux OS image. This
@@ -22,7 +22,7 @@ transactional bootc updates. The agent runtime is a pinned `claw-code` build.
                 │
                 │ SSH
                 ▼
-┌──────────── Agent VM (tank-claw-os) ─────────────────────────┐
+┌──────────── Agent VM (tank-agent-os) ─────────────────────────┐
 │                                                              │
 │  ┌──────────────────────────────────────────────────────┐    │
 │  │                  clawx container                     │    │
@@ -92,7 +92,7 @@ use case.
 
 ## Why This Is Useful
 
-tank-claw-os packages the host OS, `claw-code` binary, Quadlet units, CLI shim,
+tank-agent-os packages the host OS, `claw-code` binary, Quadlet units, CLI shim,
 service-gator integration, and upgrade path into one OCI bootc image. The
 mutable parts stay outside the image:
 
@@ -129,7 +129,7 @@ values to the environment expected by `claw-code`.
 
 Autonomous AI agents make runtime decisions about which services to contact and
 which files to read. Standard container isolation limits what a compromised or
-manipulated agent can reach, but it is rarely enough on its own. tank-claw-os
+manipulated agent can reach, but it is rarely enough on its own. tank-agent-os
 treats agent security as a property of the whole stack, not a single control.
 
 **Network containment** — the agent container runs with no `CAP_NET_ADMIN` on a
@@ -181,10 +181,10 @@ and [bootc-image-builder docs](https://osbuild.org/docs/bootc/).
 Use this prompt with a coding agent to get oriented and run the local VM flow:
 
 ```text
-I am working in the tank-claw-os repo. This repo builds a Fedora bootc image that runs claw-code as a rootless Podman Quadlet owned by the `clawx` user. Please help me get a local smoke test running.
+I am working in the tank-agent-os repo. This repo builds a Fedora bootc image that runs claw-code as a rootless Podman Quadlet owned by the `clawx` user. Please help me get a local smoke test running.
 
 Goals:
-- Build the bootc image `localhost/tank-claw-os:latest` for arm64 or amd64.
+- Build the bootc image `localhost/tank-agent-os:latest` for arm64 or amd64.
 - Build a QCOW2 disk image with the Podman Desktop BootC extension or manual bootc-image-builder flow.
 - Start the disk image as a Linux VM.
 - SSH in as `clawx`, verify `sudo -n true`, `sudo bootc status`, `systemctl --user status clawx.service`, and `podman ps`.

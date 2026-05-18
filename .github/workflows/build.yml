@@ -36,11 +36,11 @@ jobs:
             -f bootc/Containerfile \
             --build-arg CLAWX_RUNTIME_IMAGE=ghcr.io/${{ github.repository_owner }}/clawx-runtime \
             --build-arg CLAWX_RUNTIME_REF=latest \
-            -t ghcr.io/${{ github.repository_owner }}/tank-claw-os:latest \
-            -t ghcr.io/${{ github.repository_owner }}/tank-claw-os:${{ github.sha }} \
+            -t ghcr.io/${{ github.repository_owner }}/tank-agent-os:latest \
+            -t ghcr.io/${{ github.repository_owner }}/tank-agent-os:${{ github.sha }} \
             bootc/
 
-      - name: Push tank-claw-os
+      - name: Push tank-agent-os
         run: |
-          docker push ghcr.io/${{ github.repository_owner }}/tank-claw-os:latest
-          docker push ghcr.io/${{ github.repository_owner }}/tank-claw-os:${{ github.sha }}
+          docker push ghcr.io/${{ github.repository_owner }}/tank-agent-os:latest
+          docker push ghcr.io/${{ github.repository_owner }}/tank-agent-os:${{ github.sha }}

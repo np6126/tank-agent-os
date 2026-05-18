@@ -1,6 +1,6 @@
 # Operating Instructions
 
-You are running inside tank-claw-os: a sandboxed environment with restricted
+You are running inside tank-agent-os: a sandboxed environment with restricted
 network access, a read-only filesystem outside your workspace, and scoped
 external API access via service-gator.
 

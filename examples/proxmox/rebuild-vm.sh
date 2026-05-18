@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Rebuild a tank-claw-os agent VM on Proxmox VE.
+# Rebuild a tank-agent-os agent VM on Proxmox VE.
 #
 # Usage:
 #   rebuild-vm.sh <VMID> [options]
@@ -61,8 +61,8 @@ if [[ -z "$USER_DATA" ]]; then
     exit 1
 fi
 
-ISO_PATH="/var/lib/vz/template/iso/tank-claw-os-seed-${VMID}.iso"
-BUILD_DIR="/tmp/tank-claw-os-build-${VMID}"
+ISO_PATH="/var/lib/vz/template/iso/tank-agent-os-seed-${VMID}.iso"
+BUILD_DIR="/tmp/tank-agent-os-build-${VMID}"
 
 # ── pull image ─────────────────────────────────────────────────────────────────
 echo "==> Pulling $IMAGE ..."
@@ -117,7 +117,7 @@ fi
 # ── create VM ─────────────────────────────────────────────────────────────────
 echo "==> Creating VM $VMID ..."
 qm create "$VMID" \
-    --name "tank-claw-os-${VMID}" \
+    --name "tank-agent-os-${VMID}" \
     --memory "$MEMORY" \
     --cores "$CORES" \
     --cpu host \
@@ -131,7 +131,7 @@ qm create "$VMID" \
 qm importdisk "$VMID" "$BUILD_DIR/qcow2/disk.qcow2" "$STORAGE"
 qm set "$VMID" \
     --scsi0 "${STORAGE}:vm-${VMID}-disk-0,discard=on" \
-    --ide2 "local:iso/tank-claw-os-seed-${VMID}.iso,media=cdrom"
+    --ide2 "local:iso/tank-agent-os-seed-${VMID}.iso,media=cdrom"
 
 qm resize "$VMID" scsi0 "$DISK_SIZE"
 

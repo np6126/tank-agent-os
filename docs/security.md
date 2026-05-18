@@ -7,7 +7,7 @@ service. It makes decisions at runtime about which tools to call, which files to
 read, and which external services to contact — and those decisions are influenced
 by content it processes, not just by the operator who started it.
 
-The threats tank-claw-os is designed to contain fall into two categories:
+The threats tank-agent-os is designed to contain fall into two categories:
 
 **Network threats** — an agent with unrestricted outbound access can:
 

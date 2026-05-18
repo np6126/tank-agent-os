@@ -84,7 +84,7 @@ ethernets:
       addresses:
         - 9.9.9.9
 NETCONF
-genisoimage -output /var/lib/vz/template/iso/tank-claw-os-seed.iso \
+genisoimage -output /var/lib/vz/template/iso/tank-agent-os-seed.iso \
   -volid cidata -joliet -rock "$tmpdir"
 ```
 
@@ -95,7 +95,7 @@ in the next step.
 
 ```bash
 qm create <vmid> \
-  --name tank-claw-os \
+  --name tank-agent-os \
   --memory 8192 \
   --cores 2 \
   --cpu host \
@@ -110,7 +110,7 @@ qm importdisk <vmid> /tmp/tank-output/qcow2/disk.qcow2 <storage>
 
 qm set <vmid> \
   --scsi0 <storage>:vm-<vmid>-disk-0,discard=on \
-  --ide2 <storage>:iso/tank-claw-os-seed.iso,media=cdrom
+  --ide2 <storage>:iso/tank-agent-os-seed.iso,media=cdrom
 
 qm resize <vmid> scsi0 30G
 
