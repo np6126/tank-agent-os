@@ -1,6 +1,6 @@
 #cloud-config
 #
-# tank-claw-os provisioning template with egress proxy configuration.
+# tank-agent-os provisioning template with egress proxy configuration.
 #
 # Prerequisites (on the proxy host, before provisioning this VM):
 #   1. Build and start an egress proxy that exposes an HTTP CONNECT endpoint
@@ -13,11 +13,11 @@
 
 users:
   - name: clawx
-    gecos: tank-claw-os agent user
+    gecos: tank-agent-os agent user
     shell: /bin/bash
     lock_passwd: true
     ssh_authorized_keys:
-      - ssh-ed25519 REPLACE_WITH_YOUR_PUBLIC_KEY tank-claw-os
+      - ssh-ed25519 REPLACE_WITH_YOUR_PUBLIC_KEY tank-agent-os
 
 write_files:
   # System-level proxy config read by clawx-nftables.service at boot.

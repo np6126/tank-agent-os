@@ -1,6 +1,6 @@
 # CLI
 
-tank-claw-os keeps the tank-os host-side command name:
+tank-agent-os keeps the tank-os host-side command name:
 `/usr/local/bin/clawx`.
 
 The command is a compatibility wrapper. It delegates into the running

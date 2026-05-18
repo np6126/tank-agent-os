@@ -1,6 +1,6 @@
 # Provisioning
 
-tank-claw-os creates the `clawx` user in the image, but instance access
+tank-agent-os creates the `clawx` user in the image, but instance access
 should be configured at provisioning time. Do not bake private SSH keys,
 passwords, API keys, provider endpoints, model names, or private hostnames into
 the image.
@@ -18,7 +18,7 @@ users:
     shell: /bin/bash
     lock_passwd: true
     ssh_authorized_keys:
-      - ssh-ed25519 REPLACE_WITH_YOUR_PUBLIC_KEY tank-claw-os
+      - ssh-ed25519 REPLACE_WITH_YOUR_PUBLIC_KEY tank-agent-os
 
 runcmd:
   - [loginctl, enable-linger, clawx]
@@ -70,14 +70,14 @@ printf 'instance-id: clawx-%s\nlocal-hostname: clawx\n' "$(date +%s)" \
 
 # macOS
 hdiutil makehybrid -iso -joliet -default-volume-name cidata \
-  -o tank-claw-os-seed.iso "$tmpdir"
+  -o tank-agent-os-seed.iso "$tmpdir"
 
 # Linux
-genisoimage -output tank-claw-os-seed.iso \
+genisoimage -output tank-agent-os-seed.iso \
   -volid cidata -joliet -rock "$tmpdir"
 ```
 
-Attach `tank-claw-os-seed.iso` to the VM as a CD-ROM/cloud-init seed disk.
+Attach `tank-agent-os-seed.iso` to the VM as a CD-ROM/cloud-init seed disk.
 
 ## libvirt
 
@@ -87,9 +87,9 @@ With recent `virt-install`, pass the same cloud-init files:
 virt-install \
   --connect qemu:///system \
   --import \
-  --name tank-claw-os \
+  --name tank-agent-os \
   --memory 4096 \
-  --disk /path/to/tank-claw-os.qcow2 \
+  --disk /path/to/tank-agent-os.qcow2 \
   --os-variant fedora-unknown \
   --cloud-init user-data=examples/cloud-init/clawx-user-data.yaml,meta-data=examples/cloud-init/meta-data
 ```
