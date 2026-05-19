@@ -3,9 +3,24 @@ set -euo pipefail
 
 clawx_home="${HOME:-/var/home/clawx}/.clawx"
 workspace_dir="${HOME:-/var/home/clawx}/workspaces"
+# opencode's XDG_CONFIG_HOME mount target — pre-create as clawx so Podman's
+# bind-mount setup doesn't materialise the parent as root and lock the
+# agent out of writing siblings to opencode-config.json.
+opencode_xdg_config="${HOME:-/var/home/clawx}/.clawx/xdg-config/opencode"
 
 umask 077
-mkdir -p "$clawx_home" "$workspace_dir"
+mkdir -p "$clawx_home" "$workspace_dir" "$opencode_xdg_config"
+
+# opencode 1.15+ does fs.access('$workspace/.git') at startup (including for
+# `mcp list` and other non-git subcommands) and crashes with PermissionDenied
+# if the path doesn't exist. The operator's real workflow will replace this
+# placeholder when they `git clone` into ~/workspaces — but at first boot the
+# directory is empty, so we lay down a minimal valid git repo skeleton.
+git_marker="$workspace_dir/.git"
+if [[ ! -e "$git_marker" ]]; then
+    mkdir -p "$git_marker/refs/heads" "$git_marker/objects"
+    printf 'ref: refs/heads/main\n' > "$git_marker/HEAD"
+fi
 
 # Build a merged CA bundle: system trust anchors + proxy CA cert.
 # Compiled binaries (Go, Rust/openssl, etc.) read the system CA bundle path
@@ -26,11 +41,20 @@ if podman secret inspect proxy_ca_cert >/dev/null 2>&1; then
                 break
             fi
         done
+        # Atomic write: clawx.container and service-gator.container both run
+        # this script as ExecStartPre and systemd may start them in parallel,
+        # so a concurrent reader could otherwise observe a half-written
+        # bundle and fail the TLS handshake. mktemp + mv eliminates the
+        # window; the trap cleans up if cat/printf fails before the rename.
+        tmp_bundle=$(mktemp "$merged_bundle.XXXXXX")
+        trap 'rm -f "$tmp_bundle"' EXIT
         if [[ -n "$system_bundle" ]]; then
-            { cat "$system_bundle"; printf '\n%s\n' "$proxy_ca"; } > "$merged_bundle"
+            { cat "$system_bundle"; printf '\n%s\n' "$proxy_ca"; } > "$tmp_bundle"
         else
-            printf '%s\n' "$proxy_ca" > "$merged_bundle"
+            printf '%s\n' "$proxy_ca" > "$tmp_bundle"
         fi
+        mv -f "$tmp_bundle" "$merged_bundle"
+        trap - EXIT
     fi
 else
     rm -f "$merged_bundle"
@@ -57,5 +81,4 @@ if podman secret inspect gitea_registry_password >/dev/null 2>&1; then
 fi
 
 # Remove any existing container so Podman always creates it fresh.
-# :Z then relabels volume files to the new container's MCS pair on every start.
 podman rm -f clawx 2>/dev/null || true

@@ -1,0 +1,50 @@
+[Unit]
+Description=docs-mcp-server: scrape + search developer documentation for the agent
+After=network-online.target
+# First boot needs to pull the docs-mcp-server image (~600 MB unpacked, big
+# Chromium layer). Default StartLimitBurst (5) trips before the pull
+# finishes — same widening as searxng.container.
+StartLimitBurst=10
+StartLimitIntervalSec=300
+
+[Container]
+# Image= placeholder is rewritten at bootc-image-build to point at
+# ghcr.io/arabold/docs-mcp-server@${DOCS_MCP_REF}. See bootc/Containerfile.
+Image=ghcr.io/arabold/docs-mcp-server:placeholder
+ContainerName=docs-mcp
+Pull=missing
+RunInit=true
+Network=clawx-isolated.network
+# Named podman volume for the index DB. Lives in the docs-mcp container's
+# own storage scope — NOT a third writable mount on the clawx container
+# (preserves the two-writable-paths invariant in docs/security.md).
+Volume=docs-mcp-data:/data
+Volume=docs-mcp-config:/config
+# Telemetry kill-switch. docs-mcp-server defaults to PostHog-enabled; this
+# routes through the in-process kill-switch (src/utils/config.ts) before any
+# network call. Defence in depth: even if upstream regresses the env knob,
+# our egress allowlist excludes PostHog hosts so the call fails at the proxy.
+# See audits/docs-mcp-server-2026-05-19.md (F-DM-001).
+Environment=DOCS_MCP_TELEMETRY=false
+# Belt-and-braces against runtime Chromium fetches. The upstream
+# production Dockerfile already sets these; we set them again so a future
+# image rebuild that drops them still cannot reach out.
+Environment=PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+Environment=PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
+# Default ENTRYPOINT is `node dist/index.js`; without --protocol http it
+# auto-detects based on TTY and falls back to stdio in non-TTY container
+# launches. opencode connects remotely via HTTP, so force the HTTP transport.
+Exec=--protocol http --host 0.0.0.0 --port 6280 --no-logo
+
+[Service]
+# ~600 MB unpacked image (Chromium layer) — on a slow first-boot link the
+# pull can take well past the searxng default. 600s gives headroom; once
+# the image is cached every subsequent start is sub-second anyway.
+TimeoutStartSec=600
+Restart=on-failure
+# Default RestartSec is ~100ms — too fast for image pulls. Stretch it so
+# retries land further apart and play nicely with StartLimit* above.
+RestartSec=10s
+
+# [Install] section appended at image build for AGENT_KIND=opencode only;
+# see searxng.container for the same logic.

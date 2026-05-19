@@ -1,0 +1,11 @@
+[Unit]
+Description=Generate opencode config.json from clawx agent.env
+After=systemd-tmpfiles-setup.service
+Before=user@1000.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/tank-os/gen-opencode-config
+
+[Install]
+WantedBy=multi-user.target

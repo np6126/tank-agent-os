@@ -4,6 +4,12 @@
 It provides scoped access to external services such as GitHub, GitLab, Forgejo,
 and JIRA without baking raw PATs into the image.
 
+The upstream image is pinned to a specific digest in `bootc/Containerfile`
+(`SERVICE_GATOR_IMAGE` + `SERVICE_GATOR_REF`). As of this writing the canonical
+upstream namespace is `ghcr.io/lobstertrap/service-gator` — older versions
+of this repo tracked `ghcr.io/cgwalters/service-gator`, which stopped
+rebuilding in Feb 2026.
+
 The container sees workspaces at:
 
 ```text
@@ -62,7 +68,7 @@ systemctl --user restart service-gator.service
 
 ### Permission reference
 
-Each repository entry accepts the following boolean fields:
+Each GitHub / GitLab / Forgejo repository entry accepts these boolean fields:
 
 | Field | Controls |
 |---|---|
@@ -73,6 +79,26 @@ Each repository entry accepts the following boolean fields:
 | `approve` | Approve MRs (GitLab only) |
 | `write` | Full write access — implies all other permissions |
 | `require-fork` | Restrict pushes to forks of the repo only |
+
+JIRA uses a slightly different schema: per-project, per-issue permissions
+plus a top-level `global_read` switch.
+
+```jsonc
+"jira": {
+  "global_read": false,           // allow read across ALL projects
+  "projects": {
+    "PROJ": { "read": true, "comment": false, "create": false, "write": false }
+  },
+  "issues": {
+    "PROJ-123": { "read": true, "comment": false, "write": false }
+  }
+}
+```
+
+`global_read` is convenient when issue-level permissions are too granular but
+you still want write to be project-scoped. `comment` was added recently and
+controls whether the agent can post comments separately from the heavier
+`write` permission.
 
 `push-new-branch` and `create-draft` are independent: you can allow branch
 pushes without allowing PR creation, or vice versa.
@@ -103,11 +129,14 @@ the service's API client and exposes methods annotated with `#[tool(...)]`. The
 `#[tool_router]` macro registers them automatically. This requires Rust knowledge
 and familiarity with the MCP protocol.
 
-**Run a second MCP server alongside service-gator** — claw-code supports
-multiple MCP server endpoints. A separate, purpose-built MCP server for the
-additional service can run in its own Quadlet on the `clawx-isolated` network.
-The trade-off is that it operates outside service-gator's scoping and audit
-model.
+**Run an additional MCP server alongside service-gator** — tank-agent-os
+already ships two opt-in MCPs on this pattern: SearXNG via `mcp-searxng`
+(see [web-search.md](web-search.md)) and developer-docs lookup via
+`docs-mcp` (see [docs-lookup.md](docs-lookup.md)). Both run as their own
+Quadlets on the `clawx-isolated` network. The trade-off is that they
+operate outside service-gator's scoping and audit model — and new MCPs
+must pass the [MCP adoption gate](security.md#mcp-adoption-gate) before
+landing in the image.
 
 **Wait for upstream** — the service-gator roadmap lists Google Docs, Linear,
 Slack, and Confluence as planned additions, as direct implementations rather

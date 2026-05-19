@@ -4,16 +4,28 @@ tank-agent-os keeps the tank-os host-side command name:
 `/usr/local/bin/clawx`.
 
 The command is a compatibility wrapper. It delegates into the running
-`clawx` rootless Podman container and executes the pinned `claw-code` binary
-inside that container.
+`clawx` rootless Podman container and executes the pinned agent binary at
+`/usr/local/bin/agent`. Which agent is behind that path depends on
+`AGENT_KIND` at image build time; the wrapper reads `/etc/clawx/agent.kind`
+and adjusts the CLI shape accordingly.
 
 For the default instance:
 
 ```bash
 systemctl --user status clawx.service
 clawx --version
-clawx prompt "say hello"
 ```
+
+**Agent-specific invocation:**
+
+| `AGENT_KIND` | Example one-shot prompt                          |
+|--------------|--------------------------------------------------|
+| `claw`       | `clawx prompt "say hello"`                       |
+| `opencode`   | `clawx run "say hello"` (or just `clawx "say hello"`; the wrapper prepends `run`) |
+
+The wrapper also rewrites `--model X` so each agent sees its expected
+format: `claw-code` gets the plain model name; `opencode` gets
+`${AGENT_PROVIDER}/${AGENT_MODEL}`.
 
 The wrapper requires provider-neutral runtime config for normal model calls:
 

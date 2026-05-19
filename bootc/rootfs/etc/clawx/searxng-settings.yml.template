@@ -1,0 +1,78 @@
+# SearXNG settings for tank-claw-os. Mounted read-only into the searxng
+# container at /etc/searxng/settings.yml. Hardened defaults for a
+# single-user, MCP-backend deployment behind the egress proxy.
+#
+# Customisation: this file lives in the bootc image. To override on a
+# specific VM, write a sysroot override (e.g. via ostree admin config-diff)
+# or rebuild the image with a different file. The `secret_key` below is
+# intentionally NOT unique-per-deployment — it is treated as a public
+# marker, not a secret, because SearXNG is only reachable from inside the
+# clawx-isolated bridge. If you ever expose port 8080 outside that bridge
+# (publish a port, attach the container to a routed network, etc.), you
+# MUST replace this value with a unique random string FIRST — otherwise
+# CSRF tokens and session IDs become trivially forgeable.
+
+# Inherit SearXNG defaults but restrict the engine set. Without `keep_only`
+# SearXNG would fan out every query to ~150 default engines (Brave,
+# Startpage, Qwant, Reddit, …) — each one a new allowlist entry to argue
+# about. Listed engines are enabled; everything else is removed.
+#
+# GitHub is intentionally NOT in keep_only: service-gator is the audited
+# path for any GitHub interaction. Enabling here would force github.com
+# into the proxy allowlist, which would bypass scopes.json (see
+# docs/security.md "Call GitHub directly: No" row).
+use_default_settings:
+  engines:
+    keep_only:
+      - duckduckgo
+      - wikipedia
+      - stackexchange
+      - mdn
+
+# The `outgoing` block below is rewritten at boot by
+# /usr/libexec/tank-os/gen-searxng-settings, which reads CLAWX_PROXY_URL
+# from /etc/clawx/proxy.env and substitutes it for the placeholder. SearXNG
+# does NOT honour HTTP_PROXY/HTTPS_PROXY env vars for its upstream-engine
+# calls; the proxy must be set explicitly here.
+outgoing:
+  request_timeout: 5.0
+  max_request_timeout: 15.0
+  proxies:
+    all://:
+      - __CLAWX_PROXY_URL__
+
+general:
+  debug: false
+  instance_name: "tank-claw-os search"
+  contact_url: false
+  enable_metrics: false
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "en"
+  formats:
+    - html
+    - json
+
+server:
+  base_url: "http://searxng:8080/"
+  port: 8080
+  bind_address: "0.0.0.0"
+  secret_key: "tank-claw-os-searxng-not-multi-user"
+  limiter: false
+  image_proxy: false
+  http_protocol_version: "1.1"
+  method: "POST"
+  default_http_headers:
+    X-Content-Type-Options: nosniff
+    X-Download-Options: noopen
+    X-Robots-Tag: noindex, nofollow
+    Referrer-Policy: no-referrer
+
+ui:
+  query_in_title: false
+  infinite_scroll: false
+  default_theme: simple
+  results_on_new_tab: false
+

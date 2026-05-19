@@ -156,8 +156,8 @@ is running:
 
 ```bash
 # Extract the CA cert for distribution to agent VMs
-podman exec leash \
-  cat /root/.mitmproxy/mitmproxy-ca-cert.pem > mitmproxy-ca-cert.pem
+podman exec egress-proxy \
+  cat /home/mitmproxy/.mitmproxy/mitmproxy-ca-cert.pem > mitmproxy-ca-cert.pem
 ```
 
 Then inject the proxy URL and CA certificate into the agent VM at boot:

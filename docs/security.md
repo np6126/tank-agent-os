@@ -27,7 +27,7 @@ technically impossible or severely limited rather than merely against policy.
 
 ## Defense Strategy
 
-Tank-claw-os addresses these threats through **impact containment**, not
+tank-agent-os addresses these threats through **impact containment**, not
 detection. Detection-based approaches — input classifiers, output filters,
 pattern-matching guardrails — can be bypassed by semantically novel attacks and
 add latency and cost. No detection layer is reliable against a sophisticated
@@ -64,13 +64,13 @@ user session starts — installs nftables rules on the host OUTPUT chain:
 - **With proxy:** the proxy destination is added to the allow-set; all other
   outbound from the `clawx` UID is rejected.
 
-The rules use `socket cgroupv2` matching with the full cgroup path of the
-`service-gator.service` unit to exempt service-gator's outbound traffic from
-the clawx deny rule. Both containers run under the same UID (1000) but in
-different systemd service cgroups, so kernel-level cgroup matching correctly
-separates their traffic without requiring separate user accounts. The agent
-process has no `CAP_NET_ADMIN` and cannot modify routing tables or firewall
-rules. The nftables table is owned by root and lives entirely outside the
+All four containers on this UID (clawx, service-gator, searxng, docs-mcp)
+are subject to the same rule. service-gator's outbound API calls
+(GitHub/GitLab/Forgejo/JIRA) now flow through the egress proxy alongside
+everything else — there is no longer a cgroup-based exemption, so the proxy
+log is the single, complete audit trail for the agent VM. The agent process
+has no `CAP_NET_ADMIN` and cannot modify routing tables or firewall rules.
+The nftables table is owned by root and lives entirely outside the
 container's reach.
 
 ### Layer 2 — Egress Proxy
@@ -119,17 +119,21 @@ to a new CA without rebuilding.
 #### Instruction file
 
 `/etc/clawx/CLAUDE.md` is a root-owned file shipped in the bootc image. It is
-mounted read-only into the `clawx` container at `/home/clawx/CLAUDE.md`:
+mounted read-only into the `clawx` container at two paths so any supported
+agent picks it up under the filename it expects:
 
 ```
 Volume=/etc/clawx/CLAUDE.md:/home/clawx/CLAUDE.md:ro
+Volume=/etc/clawx/CLAUDE.md:/home/clawx/AGENTS.md:ro
 ```
 
-claw-code discovers instruction files by traversing upward from the working
-directory (`/home/clawx/workspaces`). This file is therefore loaded
-automatically into the system prompt on every invocation, without any wrapper
-changes. Because it is root-owned on the host and mounted read-only into the
-container, the agent cannot modify its own instruction file.
+`claw-code` reads `CLAUDE.md`; `opencode` reads `AGENTS.md`. Both agents
+discover the file by traversing upward from the working directory
+(`/home/clawx/workspaces`), so it is loaded automatically into the system
+prompt on every invocation without any wrapper changes. Because the source
+file is root-owned on the host and mounted read-only into the container, the
+agent cannot modify its own instruction file no matter which agent is
+running.
 
 The file establishes a trust hierarchy: content the agent reads while working
 (files, web pages, issue bodies) is data to be processed, not instructions to
@@ -151,6 +155,30 @@ layer, before any API call is made.
 A template with all supported fields is at
 `/usr/share/tank-os/scopes.json.example`. See
 [service-gator.md](service-gator.md) for the permission reference.
+
+#### Memory persistence is opt-in
+
+Some agents (notably claw-code via Claude Code's auto-memory) write
+their own notes across sessions. tank-agent-os defaults these writes to
+the container's ephemeral overlay-FS so they disappear on every
+container recreate — there is no agent-written state that survives
+unless the operator explicitly enables it.
+
+Enabling persistence requires a build-time flag
+(`--build-arg AGENT_MEMORY_PERSIST=true`). When set, `clawx-init`
+symlinks the agent's memory directory into `~/.clawx/` so notes survive.
+The two-writable-paths invariant is preserved — memory lives inside the
+existing agent-state mount.
+
+The reason persistence is opt-in is the prompt-injection-persistence
+surface it opens: a malicious document the agent processes during one
+session could leave behind a note designed to influence the next
+session. The `CLAUDE.md` instruction file ships a defence-in-depth
+disclaimer in every image (regardless of the build flag) telling the
+agent to treat any persistent notes as data rather than authoritative
+commands. That mitigation reduces the surface but doesn't eliminate it,
+which is why the default stays off. See [memory.md](memory.md) for the
+threat-model write-up and how to wipe memory.
 
 ## Hardened Host Configuration
 
@@ -180,13 +208,166 @@ as root.
 ### Supply Chain Pinning
 
 The service-gator container image is pinned to a specific digest rather than
-`:latest`. service-gator has unrestricted outbound internet access (it is the
-agent's permitted channel to external services), so a compromised upstream image
-would be the highest-value supply chain target in this stack. Pinning to a
-digest ensures that `podman pull` cannot silently replace the image.
+`:latest`. service-gator mediates the agent's GitHub/GitLab/Forgejo/JIRA
+calls — both its scope enforcement and the credentials it holds make a
+compromised upstream image a high-value supply-chain target even though the
+egress proxy now constrains where it can connect. Pinning to a digest ensures
+that `podman pull` cannot silently replace the image.
 
-The claw-code binary is compiled from a pinned git commit hash at image build
-time. There is no runtime pull of the agent binary.
+The agent binary is pinned at image build time via `AGENT_KIND` and the
+matching SHA-256 ARG. There is no runtime pull of the agent binary.
+
+| `AGENT_KIND` | Pinned input            | Verified output                       |
+|--------------|-------------------------|---------------------------------------|
+| `claw`       | Git commit + 3 patches  | SHA-256 of locally built binary       |
+| `opencode`   | Release tag + asset name| SHA-256 of upstream tarball + binary  |
+
+For `AGENT_KIND=opencode` there is one further input to pin:
+`@opencode-ai/plugin`, opencode's plugin SDK. opencode tries to
+`bun install` it on every startup as a background dependency — left
+unhandled, this would reach `registry.npmjs.org` at runtime and pull
+arbitrary JS, defeating the binary pin above. We instead download the
+tarball at build time into the `clawx-runtime` image with
+`OPENCODE_PLUGIN_SHA256` verifying the content, then `clawx-init`
+copies the resolved tree into the agent's writable mount on first
+container start. opencode's own dirty-check finds the dependency
+satisfied locally and skips the network call. See
+[build.md](build.md#pinned-components) for `OPENCODE_PLUGIN_VERSION`
+and the version-bump procedure.
+
+For `claw`, the build is reproducible (`--remap-path-prefix`,
+`-C strip=symbols`); any drift in patches, `Cargo.lock`, or the cargo
+dependency graph changes the binary hash and fails the build. A Fedora
+`rust` package upgrade also changes the hash — re-recording is the explicit
+audit step that acknowledges the toolchain change.
+
+For `opencode`, we trust the upstream maintainer's CI to produce the binary
+and only verify the artifact's identity (tarball SHA before extraction,
+binary SHA after). Trust surface is identical to `service-gator`: pin the
+digest of an externally-built artifact.
+
+The hash file ships at `/usr/local/share/tank-os/agent.sha256` (agent-
+agnostic path) and can be re-checked on a live VM with
+`sudo sha256sum -c /usr/local/share/tank-os/agent.sha256` to detect in-place
+tampering of the binary on the bootc filesystem. See
+[build.md](build.md#reproducible-build) for the recording-then-pinning
+workflow.
+
+#### MCP Adoption Gate
+
+Pinning protects against tampering of the artifact we already chose to
+trust; it does nothing to tell us whether the choice was sound. Any MCP
+server added to tank-agent-os runs alongside the agent's tool surface and
+inherits the agent's blast radius if compromised, so adoption gets a
+review pass first, separately from the version-bump cadence.
+
+The review uses the CSA `mcpserver-audit` framework
+([ModelContextProtocol-Security/mcpserver-audit](https://github.com/ModelContextProtocol-Security/mcpserver-audit))
+as the checklist. It is a guided methodology — prompts plus a directory
+of CWE-aligned checks — not a CLI tool, so the work is a structured
+source review of the candidate's repo (credential handling, dynamic
+execution, network binding, transport security, logging, supply chain).
+The output for each adopted MCP lives at `audits/<mcp-name>-<ISO-date>.md`
+with a one-paragraph disposition (`accept` / `accept with mitigation` /
+`reject`) on top and the per-check results below. Findings that warrant
+operator awareness — but do not block adoption — are captured as
+informational entries with the rationale for accepting them.
+
+Audits exist today for:
+
+- [`audits/service-gator-2026-05-19.md`](../audits/service-gator-2026-05-19.md)
+- [`audits/mcp-searxng-2026-05-19.md`](../audits/mcp-searxng-2026-05-19.md)
+- [`audits/docs-mcp-server-2026-05-19.md`](../audits/docs-mcp-server-2026-05-19.md) (accept with mitigation: `DOCS_MCP_TELEMETRY=false` pinned in the Quadlet env)
+
+A PR that adds a new MCP must include a matching `audits/<name>-<date>.md`
+file. See [TODO_oss_release.md](../TODO_oss_release.md) for the OSS-process
+mirror of this gate.
+
+#### Sigstore verification — queued behind upstream
+
+Digest pinning catches tampering of the artifact we resolved, but it
+trusts the registry to have given us the right artifact in the first
+place. Sigstore signatures close that gap: the build that produced
+the image also publishes a transparency-log entry the consumer can
+re-verify before consumption. Pre-check on 2026-05-19 with cosign
+v2.4.1:
+
+```
+cosign verify ghcr.io/lobstertrap/service-gator@sha256:792dd2c…
+  Error: no signatures found
+cosign verify ghcr.io/searxng/searxng@sha256:25ff3c04…
+  Error: no signatures found
+```
+
+None of the images we depend on (service-gator, SearXNG, docs-mcp-server)
+ship a Sigstore signature or a SLSA-provenance attestation at the time of
+writing. The verification step is therefore queued behind upstream
+enabling signing.
+When either upstream begins publishing signatures, a CI step using
+`thv verify` (stacklok/toolhive) or `cosign verify` with the matching
+identity/issuer regex gets added to `.gitea/workflows/build.yml` ahead
+of the `clawx-runtime` build, fail-closed on mismatch.
+
+Until then, the supply-chain controls in place are:
+
+- SHA-256 digest pin on every consumed image (`SERVICE_GATOR_REF`,
+  `SEARXNG_REF`, `DOCS_MCP_REF`).
+- `--ignore-scripts` plus integrity-checked tarball download for the
+  npm-installed `mcp-searxng@1.0.3` and the `@opencode-ai/plugin`
+  pre-bake.
+- An [MCP adoption gate](#mcp-adoption-gate) source review before any
+  MCP enters the runtime image.
+
+### Agent Auto-Update Policy
+
+`opencode` ships with `autoupdate: true` as its built-in default: on start,
+it pings the upstream release endpoint and would download a newer binary
+if available. `claw-code` has no documented auto-update behaviour.
+
+Two layers prevent silent agent replacement in tank-agent-os:
+
+1. **Egress allowlist excludes update hosts.** The egress proxy MUST NOT
+   list `opencode.ai`, `github.com/anomalyco/opencode/releases`, or related
+   CDN hosts. Without an allow entry the update probe fails before the TLS
+   handshake — no version check, no download, no telemetry. This is the
+   structural defence and applies even when the operator forgets the
+   per-agent config.
+2. **`autoupdate: false` is pinned into the image.** The bootc image ships
+   a root-owned read-only config at `/etc/clawx/opencode-config.json`
+   mounted into the container at `/home/clawx/.config/opencode/config.json`.
+   The agent reads it on start and respects the disabled flag; the file
+   cannot be modified from inside the container. Belt-and-braces alongside
+   the proxy allowlist.
+
+If a maintainer needs to update opencode, they bump `OPENCODE_REF` /
+`OPENCODE_SHA256` in `bootc/Containerfile` **and** `OPENCODE_PLUGIN_VERSION` /
+`OPENCODE_PLUGIN_SHA256` in `bootc/clawx-runtime/Containerfile` (the plugin
+SDK version must match the binary version — opencode pins it that way
+internally), then rebuild. The same audited path as any other pinned
+component.
+
+### Agent-Internal Permission Models
+
+opencode (and to a lesser extent claw-code) ships with its own permission
+layer that gates tool calls and filesystem access from inside the agent
+process. tank-agent-os intentionally relaxes some of these — specifically
+`external_directory: "allow"` in the opencode config — because:
+
+- the agent's internal permission layer is built for sessions where the
+  user clicks "approve" interactively. In tank-agent-os flows like
+  `clawx mcp list` or agent tool invocations there is no operator at the
+  prompt, so the default `"ask"` setting auto-rejects and silently
+  breaks features.
+- the **OS-level container sandbox** (only `~/.clawx` and `~/workspaces`
+  mounted writable, no `CAP_NET_ADMIN`, nftables-confined network,
+  service-gator-mediated external calls, root-owned ro instruction
+  files) is the load-bearing defense and is **not** weakened by the
+  in-process permission relaxation. The agent can read `/etc`, `/usr`,
+  etc., which are part of the OS image anyway and contain no secrets.
+
+In other words: tank-agent-os treats the agent's internal ACL as a
+session-UX feature, not as a security boundary. The container is the
+boundary.
 
 ## What The Agent Can And Cannot Do
 
@@ -194,52 +375,74 @@ time. There is no runtime pull of the agent binary.
 |---|---|
 | Call service-gator (MCP tools) | Yes — via bridge network |
 | Call model provider (LLM endpoint) | Yes — if proxy permits it |
-| Call GitHub directly (bypassing service-gator) | No — blocked by nftables and proxy |
+| Call GitHub directly (bypassing service-gator) | No — depends on `github.com` NOT being in the proxy allowlist; the SearXNG `github` search engine is disabled by default for the same reason. If you ever add `github.com` to the allowlist, this guarantee no longer holds and the agent has a second, scopes.json-bypassing path. Same reasoning applies to gitlab.com / forgejo hosts / `*.atlassian.net`. |
 | Call any host not in the proxy allowlist | No — blocked by proxy before TLS |
 | Access a repo not listed in scopes.json | No — rejected by service-gator |
 | Modify nftables rules | No — no CAP_NET_ADMIN in container |
 | Stop `clawx-nftables.service` | No — sudoers allows only `restart`, not `stop` |
-| Modify its own instruction file (`/home/clawx/CLAUDE.md`) | No — read-only mount, root-owned on host |
+| Modify its own instruction file (`/home/clawx/CLAUDE.md` / `AGENTS.md`) | No — read-only mount, root-owned on host |
+| Auto-update itself (opencode `autoupdate`) | No — update host not in proxy allowlist; config also pins `autoupdate: false` |
+| Reach external search engines directly | No — even with the opt-in SearXNG stack enabled, the agent talks to `mcp-searxng` on the bridge; only SearXNG itself has egress, and only through the same proxy/allowlist as the agent |
+| Reach external documentation hosts directly | No — even with the opt-in docs-mcp stack enabled, the agent talks to `docs-mcp` on the bridge; only docs-mcp's scraper has egress, and only through the same proxy/allowlist as the agent |
 | Modify Quadlet drop-in files | No — those directories are not mounted into the container |
-| Write to its own config (`~/.clawx/`) | Yes — required for claw-code runtime state |
+| Write to its own config (`~/.clawx/`) | Yes — required for agent runtime state; opencode's XDG paths are redirected here via `XDG_*_HOME` env vars so the agent stays inside this single writable mount |
 | Write to the workspace (`~/workspaces/`) | Yes — this is the intended working area |
 | Write outside its mounts | No — container filesystem is isolated |
+| Carry notes across sessions (memory) | Default: No — agent memory writes go to the container's ephemeral overlay-FS and are lost on recreate. With `--build-arg AGENT_MEMORY_PERSIST=true` at build, `clawx-init` symlinks the agent's memory directory into `~/.clawx/` so notes survive. Default-off because persistent memory is a prompt-injection-persistence surface — see [docs/memory.md](../docs/memory.md) and the disclaimer in `CLAUDE.md`. |
+| Install new skills | Yes — operator drops SKILL.md folders into `~/.clawx/skills/`, surfaced into each agent's lookup path via symlinks set up by `clawx-init`. Skills sit at operator-instruction-level trust (same class as `CLAUDE.md`, not workspace-data); their *blast radius* is still bounded by the proxy / `scopes.json` / two-writable-paths controls. **Open trade-off**: the directory lives inside the writable mount, so a manipulated agent can in principle persist its own SKILL.md — operational mitigation is periodic review. See [docs/skills.md](../docs/skills.md). |
 
 ## Isolation Without the Proxy
 
 `clawx-nftables.service` installs a deny-all rule for the `clawx` UID
-regardless of whether a proxy is configured. Both containers use the
-`clawx-isolated` bridge network; the nftables rules on the host OUTPUT chain
-are what separate clawx's outbound traffic from service-gator's.
+regardless of whether a proxy is configured. All four user-1000 containers
+(clawx, service-gator, searxng, docs-mcp) sit on the `clawx-isolated`
+bridge network; the nftables rules on the host OUTPUT chain are what
+constrains every one of them to the proxy.
 
 With a proxy configured, `clawx-nftables.service` adds the proxy destination
-to the allow-set so the agent can reach the model provider through the proxy.
-Without a proxy, only the loopback and established-connection rules are added —
-all new outbound connections from the clawx UID are rejected.
-
-In both cases `service-gator` is exempted from the clawx deny rule via cgroup
-matching, so it retains its own outbound internet access through the host.
+to the allow-set so traffic from any of those containers can reach the
+public internet — but only through the proxy. Without a proxy, only the
+loopback and established-connection rules are added — all new outbound
+connections from the clawx UID are rejected. service-gator gets no special
+treatment in either case; its API calls follow the same auditable path as
+the agent's.
 
 ## Trust Boundaries
 
 ```
-┌─────────────────── agent VM ───────────────────────┐
-│                                                    │
-│  /etc/clawx/CLAUDE.md (root-owned, ro)             │
-│    └── mounted into clawx container read-only      │
-│                                                    │
-│  clawx container (no CAP_NET_ADMIN, no sudo)       │
-│    │ clawx-isolated bridge                         │
-│    ├────────────────► service-gator container      │
-│    │                    │ scopes.json allowlist    │
-│    │                    │ host routing (nftables   │
-│    │                    │ cgroup exempt)           │
-│    │                    ▼                          │
-│    │                  GitHub, GitLab, JIRA, ...    │
-│    │                                               │
-│    │ host routing (nftables: proxy only)           │
-│    ▼                                               │
-└────────────────────────────────────────────────────┘
+┌─────────────────── agent VM ───────────────────────────────────┐
+│                                                                │
+│  /etc/clawx/CLAUDE.md (root-owned, ro)                         │
+│    └── mounted into clawx container at ~/CLAUDE.md AND         │
+│        ~/AGENTS.md (claw reads first, opencode reads second)   │
+│                                                                │
+│  /etc/clawx/opencode-config.json (root-owned, ro,              │
+│    regenerated from agent.env by clawx-opencode-config.service)│
+│                                                                │
+│  clawx container (no CAP_NET_ADMIN, no sudo)                   │
+│    │ clawx-isolated bridge                                     │
+│    ├────────────────► service-gator container                  │
+│    │                    │ scopes.json allowlist                │
+│    │                    │ host routing (nftables: proxy only)  │
+│    │                    │ ── routes GitHub/GitLab/JIRA calls   │
+│    │                    │    through the proxy alongside the   │
+│    │                    │    agent, single audit trail         │
+│    │                    │                                      │
+│    ├────────────────► mcp-searxng (opt-in, disabled by default)│
+│    │                    │                                      │
+│    │                    ▼                                      │
+│    │                  searxng container (opt-in)               │
+│    │                    │ host routing (nftables: proxy only,  │
+│    │                    │ same trust class as clawx)           │
+│    │                    │                                      │
+│    ├────────────────► docs-mcp (opt-in, disabled by default)   │
+│    │                    │ scraper + index DB in one container  │
+│    │                    │ host routing (nftables: proxy only,  │
+│    │                    │ same trust class as clawx)           │
+│    │                    │                                      │
+│    │ host routing (nftables: proxy only)                       │
+│    ▼  ◄─── same proxy ───┘                                     │
+└────────────────────────────────────────────────────────────────┘
          │ HTTP_PROXY / HTTPS_PROXY
          ▼
 ┌──── proxy host (separate trust boundary) ──────────┐

@@ -5,13 +5,18 @@ session. Complete them in order.
 
 ## 1. Verify The VM
 
-SSH in as `clawx` and confirm the core services are up:
+SSH in as `clawx` and confirm the user containers are up. `clawx` and
+`service-gator` are always running; on an `opencode` build `searxng`,
+`mcp-searxng`, and `docs-mcp` auto-start too.
 
 ```bash
-systemctl --user status clawx.service
-systemctl --user status service-gator.service
 podman ps
+cat /etc/clawx/agent.kind    # → `claw` or `opencode`
 ```
+
+`agent.kind` records which agent variant this image was built with
+(`--build-arg AGENT_KIND=…` at image-build time). Both variants are invoked
+through the same `clawx` host wrapper.
 
 Both containers should be running. If they are not:
 
@@ -60,10 +65,19 @@ secrets are added or removed.
 
 ```bash
 clawx --version
-clawx prompt "say hello"
 ```
 
-If the version prints but the prompt call fails, the model provider is not
+For a one-shot prompt:
+
+| `AGENT_KIND` | Command |
+|---|---|
+| `claw`     | `clawx prompt "say hello"` |
+| `opencode` | `clawx "say hello"` (wrapper prepends `run` automatically) or `clawx run "say hello"` |
+
+Bare `clawx` (no args) on an opencode build opens the interactive TUI with the
+configured model pre-selected.
+
+If `--version` prints but the prompt call fails, the model provider is not
 reachable. Check `AGENT_BASE_URL` and confirm the provider is accessible from
 the VM.
 
@@ -113,9 +127,13 @@ service-gator listens on the `clawx-isolated` bridge network. Inside the
 http://service-gator:8080
 ```
 
-Configure this address as the MCP server URL in claw-code's configuration.
-The exact config format depends on the claw-code version in use; check the
-upstream documentation for the MCP server field name.
+For **`AGENT_KIND=opencode`** this MCP endpoint is wired automatically:
+`gen-opencode-config` writes a `mcp.service-gator` entry into the generated
+`/etc/clawx/opencode-config.json` so opencode discovers the tools on start.
+You don't need to do anything beyond creating the secrets.
+
+For **`AGENT_KIND=claw`** the MCP URL must be configured in claw-code's own
+config (config format is claw-code-version-specific; check upstream docs).
 
 ## 7. Configure The Egress Proxy (Optional)
 
@@ -156,6 +174,61 @@ into the host system trust store
 host-level processes — Podman image pulls and `sudo bootc upgrade` — trust
 the MITM certificate without any extra steps.
 
+## 8. Web Search
+
+For **`AGENT_KIND=opencode`**: the SearXNG + `mcp-searxng` stack is
+auto-enabled at image build, the MCP endpoint is wired in the opencode
+config, and `tank-clawx-secrets` writes the proxy drop-in for SearXNG
+when you run it. You only need to make sure the egress-proxy allowlist
+contains the engine hosts (default-enabled engines: DuckDuckGo,
+Wikipedia, StackExchange, MDN).
+
+For **`AGENT_KIND=claw`**: the Quadlets ship but are not enabled. If
+you want web search, extend the proxy allowlist, run
+`tank-clawx-secrets`, then:
+
+```bash
+systemctl --user enable --now searxng.service mcp-searxng.service
+```
+
+For both: see [web-search.md](web-search.md) for the trust model, the
+engines list, why GitHub is intentionally not in the set, and how to
+disable.
+
+## 9. Docs Lookup
+
+Same shape as Web Search. For **`AGENT_KIND=opencode`**, `docs-mcp` is
+auto-enabled and the MCP endpoint is wired into the opencode config.
+Extend the egress-proxy allowlist with the doc hosts you want indexed
+(defaults: `docs.python.org`, `docs.rs`, `developer.mozilla.org`,
+`pkg.go.dev`). For **`AGENT_KIND=claw`**, the Quadlet ships disabled:
+
+```bash
+systemctl --user enable --now docs-mcp.service
+```
+
+See [docs-lookup.md](docs-lookup.md) for the trust model and how to
+disable.
+
+## 10. Skills and Memory (Optional)
+
+Both supported agents read skills from a single host-side directory.
+Drop a `SKILL.md` folder in and the next agent session sees it:
+
+```bash
+mkdir -p ~/.clawx/skills/my-skill
+# write ~/.clawx/skills/my-skill/SKILL.md ...
+```
+
+See [skills.md](skills.md) for the format.
+
+Persistent agent memory (claw-code's auto-memory and equivalents) is
+**off by default** — memory writes go to the container's overlay-FS and
+are lost on recreate. To enable across-session memory, rebuild the
+image with `--build-arg AGENT_MEMORY_PERSIST=true`. See
+[memory.md](memory.md) for the threat-model trade-off and how to wipe
+memory if needed.
+
 ## Reference
 
 | What changed | What to run |
@@ -163,5 +236,7 @@ the MITM certificate without any extra steps.
 | Added or removed a secret | `tank-clawx-secrets` then restart the affected service |
 | Edited `~/.clawx/agent.env` | `systemctl --user restart clawx.service` |
 | Edited `~/.config/service-gator/scopes.json` | `systemctl --user restart service-gator.service` |
-| Edited `/etc/clawx/proxy.env` | `sudo systemctl restart clawx-nftables.service` |
+| Edited `/etc/clawx/proxy.env` | `sudo systemctl restart clawx-nftables.service clawx-searxng-settings.service` |
+| Installed a skill in `~/.clawx/skills/` | Start a new agent session — no service restart needed |
+| Want to wipe persistent agent memory | `rm -rf ~/.clawx/claude-projects/` (only present on `AGENT_MEMORY_PERSIST=true` builds) |
 | OS update available | `sudo bootc upgrade --apply` |

@@ -28,43 +28,174 @@ podman push <your-registry>/clawx-runtime:latest
 
 ### 2. Build the bootc OS image
 
-Build the bootc image from the repo root. In these commands, the final `bootc`
-argument is the build context directory in this repo:
+The bootc image embeds exactly one agent at build time, chosen via
+`AGENT_KIND` (default `claw`). Supported values:
 
-For Apple Silicon:
+| `AGENT_KIND` | Agent       | Build form                                        |
+|--------------|-------------|---------------------------------------------------|
+| `claw`       | `claw-code` | source-build (Rust/cargo) with patches            |
+| `opencode`   | `opencode`  | upstream Bun-compiled binary, SHA-pinned download |
+
+One agent per image — no runtime switching. The host wrapper
+(`/usr/local/bin/clawx`) reads `/etc/clawx/agent.kind` to know which agent's
+CLI conventions to apply.
+
+Build the bootc image from the repo root. The final `bootc` argument is the
+build context directory in this repo:
+
+For x86_64. The agent variant is encoded in the tag, not the image name:
 
 ```bash
-podman build \
-  --platform linux/arm64 \
-  --build-arg CLAWX_RUNTIME_IMAGE=<your-registry>/clawx-runtime \
-  --build-arg CLAWX_RUNTIME_REF=latest \
-  -t localhost/tank-agent-os:latest \
-  -f bootc/Containerfile \
-  bootc
-```
-
-For x86_64:
-
-```bash
+# claw build (default)
 podman build \
   --platform linux/amd64 \
+  --build-arg AGENT_KIND=claw \
   --build-arg CLAWX_RUNTIME_IMAGE=<your-registry>/clawx-runtime \
   --build-arg CLAWX_RUNTIME_REF=latest \
-  -t localhost/tank-agent-os:latest \
+  -t localhost/tank-agent-os:claw \
+  -f bootc/Containerfile \
+  bootc
+
+# opencode build
+podman build \
+  --platform linux/amd64 \
+  --build-arg AGENT_KIND=opencode \
+  --build-arg CLAWX_RUNTIME_IMAGE=<your-registry>/clawx-runtime \
+  --build-arg CLAWX_RUNTIME_REF=latest \
+  -t localhost/tank-agent-os:opencode \
   -f bootc/Containerfile \
   bootc
 ```
 
-The default base is `quay.io/fedora/fedora-bootc:latest`. `claw-code` is built
-from source using the pinned build args in `bootc/Containerfile`:
+The CI workflow publishes:
+
+| Tag                              | What it points to                       |
+|----------------------------------|-----------------------------------------|
+| `tank-agent-os:claw`              | latest claw build                       |
+| `tank-agent-os:claw-<sha>`        | pinned claw build for commit `<sha>`    |
+| `tank-agent-os:opencode`          | latest opencode build                   |
+| `tank-agent-os:opencode-<sha>`    | pinned opencode build for commit `<sha>`|
+| `tank-agent-os:latest`            | alias for `:claw` (backwards-compat)    |
+| `tank-agent-os:<sha>`             | alias for `:claw-<sha>` (backwards-compat) |
+
+For Apple Silicon, swap `linux/amd64` for `linux/arm64`. For opencode on
+arm64, also override `OPENCODE_ASSET=opencode-linux-arm64.tar.gz` and the
+corresponding `OPENCODE_SHA256`.
+
+The default base is `quay.io/fedora/fedora-bootc:latest`. Per-agent pins
+live in `bootc/Containerfile`:
 
 ```env
+# claw-code (source build, patches applied)
 CLAW_CODE_REPO=https://github.com/ultraworkers/claw-code.git
-CLAW_CODE_REF=41b769fc5aba3a1a35e8220dd44d53d1de028ad2
+CLAW_CODE_REF=63ce483c2788a96f470acd4625d8540292bdd16e
+CLAW_CODE_SHA256=88e8b34f...        # see "Reproducible build" below
+
+# opencode (upstream binary download)
+OPENCODE_RELEASE_BASE=https://github.com/anomalyco/opencode/releases/download
+OPENCODE_REF=v1.15.4
+OPENCODE_ASSET=opencode-linux-x64.tar.gz
+OPENCODE_SHA256=f0734928...         # see "Reproducible build" below
 ```
 
 If `CLAWX_RUNTIME_IMAGE` and `CLAWX_RUNTIME_REF` are omitted, the Quadlet uses
 the unmodified `quay.io/fedora/fedora:44` base image (no development tools).
+
+### Reproducible build
+
+The same pin-then-verify pattern applies to both agents, but the trust input
+differs:
+
+| Agent     | What is pinned             | What is verified                     |
+|-----------|----------------------------|--------------------------------------|
+| `claw`    | Git commit + 3 patches     | SHA-256 of the locally-built binary  |
+| `opencode`| Upstream release tag + asset | SHA-256 of the downloaded tarball   |
+
+For claw, the trust surface includes our toolchain (Fedora `rust`) and the
+patches. For opencode, the trust surface is the upstream maintainer's CI —
+we only verify the artifact's identity.
+
+#### claw-code
+
+The `claw-builder` stage compiles `claw-code` deterministically:
+
+- `RUSTFLAGS="--remap-path-prefix=…"` — strips absolute build paths from the
+  binary so the host filesystem layout does not leak into the artifact.
+- `RUSTFLAGS="… -C strip=symbols"` — removes debug symbol tables that
+  otherwise vary between builds.
+- `cargo build --workspace --release` runs **without** `--locked`. The `sed`
+  step in the same `RUN` flips `reqwest` from `rustls-tls` to
+  `rustls-tls-native-roots`, which pulls `rustls-native-certs` into the
+  dependency graph and forces `Cargo.lock` to expand — `--locked` would
+  reject that. The `CLAW_CODE_SHA256` pin on the resulting binary is the
+  primary defence against dependency drift: any change in the resolved
+  dependency graph changes the binary's bytes, the SHA-256 mismatches, and
+  the build fails before an image is produced.
+
+After the build, the stage computes the SHA-256 of the produced binary,
+prints a summary line, writes the hash into the builder-stage scratch dir,
+and (if `CLAW_CODE_SHA256` is set) compares it. A mismatch fails the build.
+
+#### opencode
+
+The `opencode-builder` stage **does not compile**. It downloads the upstream
+release tarball (`OPENCODE_ASSET`) from `OPENCODE_RELEASE_BASE/OPENCODE_REF`,
+verifies its SHA-256 against `OPENCODE_SHA256`, extracts the single binary,
+and re-hashes it for the runtime hash file.
+
+The trust assumption is the same as for `service-gator`: we trust the
+upstream maintainer's build and verify only the artifact's identity.
+
+#### Selected binary in the final image
+
+The final stage `COPY`es both builder outputs into `/opt/agent-candidates/`
+and a `RUN` step selects the one matching `AGENT_KIND`, installs it as
+`/usr/local/bin/agent`, and writes the hash file to
+`/usr/local/share/tank-os/agent.sha256`. The unselected candidate is removed.
+The selected agent's identity is recorded in `/etc/clawx/agent.kind` for the
+host wrapper to consult.
+
+**Recording-then-pinning workflow** (same for both agents — replace `<NAME>`
+with `CLAW_CODE` or `OPENCODE`):
+
+1. First build of a new `<NAME>_REF` — leave `<NAME>_SHA256` empty. The
+   build log prints the recorded hash.
+2. Pin that hash in `bootc/Containerfile`.
+3. From then on, every rebuild verifies the binary against the pinned hash.
+
+**When the hash must be re-recorded:**
+
+- For `claw`: `CLAW_CODE_REF` bumped, a patch in `bootc/patches/` changed,
+  `FEDORA_BOOTC_REF` upgraded (different `rust` package), or build target
+  architecture changed.
+- For `opencode`: `OPENCODE_REF` bumped or `OPENCODE_ASSET` switched (e.g.
+  arm64 vs amd64). Toolchain changes upstream do not concern us since we
+  download a pre-built binary.
+
+**Runtime verification:** the hash file ships at
+`/usr/local/share/tank-os/agent.sha256` (path is agent-agnostic). On a
+running VM:
+
+```bash
+sudo sha256sum -c /usr/local/share/tank-os/agent.sha256
+```
+
+confirms the deployed binary still matches what the image build produced —
+catches in-place tampering on the bootc filesystem regardless of which
+agent variant is installed.
+
+## CI: Built tags
+
+`.gitea/workflows/build.yml` publishes per push to `main`:
+
+| Tag                              | Points at                                            |
+|----------------------------------|------------------------------------------------------|
+| `tank-agent-os:claw`              | latest claw build                                    |
+| `tank-agent-os:claw-<sha>`        | pinned claw build for that commit                    |
+| `tank-agent-os:opencode`          | latest opencode build                                |
+| `tank-agent-os:opencode-<sha>`    | pinned opencode build for that commit                |
+| `tank-agent-os:latest`            | alias for `:claw` (backwards-compat)                 |
+| `tank-agent-os:<sha>`             | alias for `:claw-<sha>` (backwards-compat)           |
 
 ## Build A Disk Image With Podman Desktop
 
@@ -144,7 +275,8 @@ out-tank-agent-os/qcow2/disk.qcow2
 ## What The Image Installs
 
 The image creates a `clawx` login user with UID/GID 1000, enables linger for
-that user, installs a pinned `/usr/local/bin/claw`, and installs a rootless
+that user, installs a pinned `/usr/local/bin/agent` (the agent binary, either
+claw-code or opencode depending on `AGENT_KIND`), and installs a rootless
 Quadlet at:
 
 ```text
@@ -160,15 +292,24 @@ Mutable state lives at:
 
 ## Upgrade A Running VM
 
-All three pinned components share the same update path: edit the relevant
-`ARG` in `bootc/Containerfile`, rebuild and push the image, then apply it
-to the running VM. No VM teardown is needed — disk state (`/var/home/clawx`,
-Podman secrets, workspaces) survives every upgrade.
+### Pinned components
+
+Every pinned input shares the same update path: edit the relevant `ARG` in
+the Containerfile noted in the table below, rebuild and push the image,
+then apply it to the running VM. No VM teardown is needed — disk state
+(`/var/home/clawx`, Podman secrets, workspaces) survives every upgrade.
 
 | Component | ARG to change | Where it lives |
 |---|---|---|
-| `claw-code` | `CLAW_CODE_REF` | compiled into bootc image, mounted read-only into `clawx` container |
+| Agent selection | `AGENT_KIND` (`claw` or `opencode`) | one builder stage per agent; only the selected one is installed under `/usr/local/bin/agent` |
+| `claw-code` | `CLAW_CODE_REF` + `CLAW_CODE_SHA256` | compiled into bootc image when `AGENT_KIND=claw`; binary hash verified at build time |
+| `opencode` | `OPENCODE_REF` + `OPENCODE_SHA256` (+ `OPENCODE_ASSET` for arch) | downloaded into bootc image when `AGENT_KIND=opencode`; tarball + binary hashes verified at build time |
+| `@opencode-ai/plugin` SDK | `OPENCODE_PLUGIN_VERSION` + `OPENCODE_PLUGIN_SHA256` in `bootc/clawx-runtime/Containerfile` | npm tarball downloaded + sha256-verified at clawx-runtime build, pre-installed into image so opencode's startup-time `bun install` finds it locally and skips the runtime npm fetch. **Must be bumped together with `OPENCODE_REF`** — opencode pins this dep internally to its own binary version, and a mismatch makes opencode treat the dep as dirty and trigger the runtime install path we are closing. |
 | `service-gator` | `SERVICE_GATOR_REF` | digest substituted into Quadlet at build time |
+| SearXNG | `SEARXNG_REF` | digest substituted into Quadlet at build time (opencode image auto-enables; claw image ships disabled) |
+| `mcp-searxng` | `MCP_SEARXNG_VERSION` in `bootc/clawx-runtime/Containerfile` | npm version pin; installed with `--ignore-scripts` inside the clawx-runtime image, no separate OCI image |
+| `docs-mcp-server` | `DOCS_MCP_REF` | digest substituted into Quadlet at build time (opencode image auto-enables; claw image ships disabled). Re-run the [MCP adoption gate](../docs/security.md#mcp-adoption-gate) when crossing major versions. |
+| Agent memory persistence | `AGENT_MEMORY_PERSIST` (`true` / `false`, default `false`) | When `true`, `clawx-init` symlinks the agent's memory directory into `~/.clawx/` so notes survive container recreate. Default `false` keeps memory in the ephemeral overlay-FS. **Threat-model trade-off** documented in [memory.md](memory.md). |
 | clawx runtime | `CLAWX_RUNTIME_IMAGE` / `CLAWX_RUNTIME_REF` | pulled by rootless Podman from registry on first start |
 | Fedora / OS base | `FEDORA_BOOTC_REF` | bootc image layer |
 
@@ -202,32 +343,29 @@ build with an older `ARG` value.
    git ls-remote https://github.com/ultraworkers/claw-code.git HEAD
    ```
 
-2. Update the pin in `bootc/Containerfile`:
+2. In `bootc/Containerfile`, bump `CLAW_CODE_REF` and clear `CLAW_CODE_SHA256`
+   (the new commit will produce a new binary hash).
+3. Rebuild — read the new SHA from the build summary and pin it.
+4. Rebuild a second time to confirm the pin verifies, then push.
+5. Apply on the running VM with `sudo bootc upgrade --apply`. After reboot,
+   `/usr/local/bin/agent` on the host is the new binary.
 
-   ```diff
-   -ARG CLAW_CODE_REF=41b769fc5aba3a1a35e8220dd44d53d1de028ad2
-   +ARG CLAW_CODE_REF=<new-commit-hash>
-   ```
+### Example: updating opencode
 
-3. Rebuild and push — only the `cargo build` layer is invalidated, all others are cached:
-
-   ```bash
-   podman build --platform linux/amd64 \
-     -t <your-registry>/tank-agent-os:latest \
-     -f bootc/Containerfile bootc
-   podman push <your-registry>/tank-agent-os:latest
-   ```
-
-4. Apply on the running VM:
+1. Find the new release tag from
+   `https://github.com/anomalyco/opencode/releases`.
+2. Download the new tarball locally and compute its SHA-256:
 
    ```bash
-   ssh clawx@<vm-ip>
-   sudo bootc upgrade --apply
+   curl -fsSL -o /tmp/opencode.tar.gz \
+     "https://github.com/anomalyco/opencode/releases/download/<tag>/opencode-linux-x64.tar.gz"
+   sha256sum /tmp/opencode.tar.gz
    ```
 
-   After reboot, `/usr/local/bin/claw` on the host is the new binary. The `clawx`
-   container mounts it read-only, so it picks up the new version on the next
-   `systemctl --user restart clawx.service`.
+3. Bump `OPENCODE_REF` and `OPENCODE_SHA256` in `bootc/Containerfile`.
+4. Rebuild with `--build-arg AGENT_KIND=opencode`. The build verifies the
+   tarball hash before extraction; mismatch fails the build.
+5. Push and apply on the running VM.
 
 ### When a full VM rebuild is needed
 

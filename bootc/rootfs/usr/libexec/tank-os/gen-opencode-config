@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Regenerates /etc/clawx/opencode-config.json from the operator's agent.env.
+# Runs as root either at boot (via clawx-opencode-config.service) or whenever
+# agent.env changes (via clawx-opencode-config.path). The config file stays
+# root-owned and is mounted ro into the clawx container — opencode cannot
+# rewrite it from inside the sandbox.
+
+agent_env=/var/home/clawx/.clawx/agent.env
+target=/etc/clawx/opencode-config.json
+tmp="${target}.tmp"
+
+# MCP endpoints baked into every config: all reside on the clawx-isolated
+# bridge and are reachable from inside the clawx container by container name.
+# - service-gator is always running (WantedBy=default.target).
+# - mcp-searxng and docs-mcp are opt-in (no [Install] for AGENT_KIND=claw,
+#   auto-enabled for AGENT_KIND=opencode at image build); when their
+#   service is not enabled opencode fails the connection soft and the tool
+#   simply doesn't appear.
+mcp_block='
+  "mcp": {
+    "service-gator": {
+      "type": "remote",
+      "url": "http://service-gator:8080/mcp",
+      "enabled": true
+    },
+    "searxng": {
+      "type": "remote",
+      "url": "http://mcp-searxng:3000/mcp",
+      "enabled": true
+    },
+    "docs-mcp": {
+      "type": "remote",
+      "url": "http://docs-mcp:6280/mcp",
+      "enabled": true
+    }
+  }'
+
+# opencode's external_directory permission defaults to "ask" — in non-
+# interactive flows (`clawx mcp list`, agent tool calls) "ask" auto-rejects
+# and the call fails. Tank-claw-os' container sandbox is the primary
+# defense (only ~/.clawx and ~/workspaces are writable mounts), so we set
+# this permission to "allow" and let the OS layer enforce isolation.
+permission_block='
+  "permission": {
+    "external_directory": "allow"
+  },'
+
+write_minimal() {
+  cat > "$tmp" <<EOF
+{
+  "\$schema": "https://opencode.ai/config.json",
+  "autoupdate": false,${permission_block}${mcp_block}
+}
+EOF
+}
+
+write_openai_compat() {
+  local base_url="${AGENT_BASE_URL//\"/\\\"}"
+  # Strip the claw-specific `local/` model-name prefix so agent.env stays
+  # agent-agnostic. claw-code does the equivalent in wire_model_for_base_url().
+  local model="${AGENT_MODEL#local/}"
+  model="${model//\"/\\\"}"
+  cat > "$tmp" <<EOF
+{
+  "\$schema": "https://opencode.ai/config.json",
+  "autoupdate": false,${permission_block}
+  "provider": {
+    "agent": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": { "baseURL": "${base_url}" },
+      "models": { "${model}": {} }
+    }
+  },${mcp_block}
+}
+EOF
+}
+
+provider_family() {
+  case "${AGENT_PROVIDER:-}" in
+    ollama|lmstudio|openrouter|openai|custom-openai-compatible) printf 'openai' ;;
+    anthropic|custom-anthropic-compatible) printf 'anthropic' ;;
+    *) printf 'unknown' ;;
+  esac
+}
+
+if [ -r "$agent_env" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$agent_env"
+  set +a
+fi
+
+if [ -n "${AGENT_BASE_URL:-}" ] && [ -n "${AGENT_MODEL:-}" ] && \
+   [ "$(provider_family)" = "openai" ]; then
+  write_openai_compat
+else
+  # No agent.env yet, or anthropic-family (opencode uses built-in anthropic
+  # provider plus ANTHROPIC_* env vars from tank-clawx-secrets).
+  write_minimal
+fi
+
+chmod 0644 "$tmp"
+
+# Idempotency guard: if the regenerated content is byte-identical to what
+# is already in place, drop the temp file and skip the restart. Without
+# this, every boot (via clawx-opencode-config.service) and every unrelated
+# touch of agent.env (via .path) would bounce the clawx container.
+if [ -f "$target" ] && cmp -s "$tmp" "$target"; then
+  rm -f "$tmp"
+  exit 0
+fi
+mv "$tmp" "$target"
+
+# Skip restart if clawx user session is not up yet (first boot, before
+# user@1000.service has started). The clawx.service will pick up the fresh
+# config when it starts normally.
+if ! loginctl show-user clawx 2>/dev/null | grep -q '^State=active'; then
+  exit 0
+fi
+
+runuser -u clawx -- env XDG_RUNTIME_DIR=/run/user/1000 \
+  systemctl --user restart clawx.service 2>/dev/null || true

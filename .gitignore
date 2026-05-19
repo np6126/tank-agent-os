@@ -1,2 +1,4 @@
 recreate_vm.sh
 update-leash-ca.sh
+.claude/scheduled_tasks.lock
+.claude/settings.local.json
