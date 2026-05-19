@@ -43,10 +43,19 @@
     ],
 
     "jira": {
+      "global_read": false,
       "projects": {
         "PROJECT_KEY": {
           "read": true,
+          "comment": false,
           "create": false,
+          "write": false
+        }
+      },
+      "issues": {
+        "PROJECT_KEY-123": {
+          "read": true,
+          "comment": false,
           "write": false
         }
       }

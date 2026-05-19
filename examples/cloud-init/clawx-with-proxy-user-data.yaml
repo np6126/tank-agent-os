@@ -3,10 +3,12 @@
 # tank-agent-os provisioning template with egress proxy configuration.
 #
 # Prerequisites (on the proxy host, before provisioning this VM):
-#   1. Build and start an egress proxy that exposes an HTTP CONNECT endpoint
-#      with allowlist enforcement (e.g. leash: https://github.com/np6126/leash).
-#   2. Extract the mitmproxy CA certificate from the proxy container, e.g. for leash:
-#        podman exec leash cat /root/.mitmproxy/mitmproxy-ca-cert.pem
+#   1. Build and start the egress-proxy:
+#        cd egress-proxy/
+#        podman build -t localhost/egress-proxy:latest .
+#        systemctl --user start egress-proxy.service
+#   2. Extract the mitmproxy CA certificate:
+#        podman exec egress-proxy cat /home/mitmproxy/.mitmproxy/mitmproxy-ca-cert.pem
 #      Copy the PEM output and paste it into the ca_cert field below.
 #
 # Replace all REPLACE_WITH_* placeholders before use.

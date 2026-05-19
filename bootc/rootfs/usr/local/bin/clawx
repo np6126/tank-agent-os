@@ -68,9 +68,14 @@ if [[ "$(id -un)" != "clawx" ]]; then
 fi
 
 if ! podman inspect --format '{{.State.Running}}' "$container_name" 2>/dev/null | grep -qx true; then
-  echo "claw-code container '$container_name' is not running." >&2
+  echo "agent container '$container_name' is not running." >&2
   echo "Try: systemctl --user start clawx.service" >&2
   exit 1
+fi
+
+agent_kind="claw"
+if [[ -r /etc/clawx/agent.kind ]]; then
+  agent_kind=$(tr -d '[:space:]' < /etc/clawx/agent.kind)
 fi
 
 exec_args=(exec --user 1000:1000)
@@ -85,7 +90,7 @@ case "${args[0]:-}" in
     exec podman "${exec_args[@]}" \
       -w /home/clawx/workspaces \
       "$container_name" \
-      /usr/local/bin/claw "${args[@]}"
+      /usr/local/bin/agent "${args[@]}"
     ;;
 esac
 
@@ -134,6 +139,42 @@ case "$AGENT_PROVIDER" in
     ;;
 esac
 
+case "$agent_kind" in
+  claw)
+    cli_args=(--model "$AGENT_MODEL" "${args[@]}")
+    ;;
+  opencode)
+    # opencode uses `provider/model` from its config-defined providers. We
+    # hard-code the provider id to `agent` to avoid collisions with opencode's
+    # built-in registry (ollama/openai/etc.) — gen-opencode-config writes a
+    # matching custom-provider entry with the operator's AGENT_BASE_URL.
+    # Strip the claw-specific `local/` prefix so the same agent.env works
+    # with both agents (claw does the equivalent in wire_model_for_base_url).
+    model_arg=(--model "agent/${AGENT_MODEL#local/}")
+    case "${args[0]:-}" in
+      '')
+        # No args → opencode's default TUI mode (interactive agent console)
+        # with the configured model pre-selected.
+        cli_args=("${model_arg[@]}")
+        ;;
+      run)
+        cli_args=(run "${model_arg[@]}" "${args[@]:1}")
+        ;;
+      serve|web|agent|auth|providers|models|tui|mcp|plugin|plug|session|github|pr|stats|debug|attach|upgrade|completion|--*)
+        cli_args=("${args[@]}")
+        ;;
+      *)
+        # Bare prompt args → `run` subcommand for one-shot ergonomics.
+        cli_args=(run "${model_arg[@]}" "${args[@]}")
+        ;;
+    esac
+    ;;
+  *)
+    echo "Error: unsupported agent kind in /etc/clawx/agent.kind: $agent_kind" >&2
+    exit 2
+    ;;
+esac
+
 exec podman "${exec_args[@]}" \
   -e "AGENT_PROVIDER=$AGENT_PROVIDER" \
   -e "AGENT_BASE_URL=$AGENT_BASE_URL" \
@@ -141,4 +182,4 @@ exec podman "${exec_args[@]}" \
   "${provider_env[@]}" \
   -w /home/clawx/workspaces \
   "$container_name" \
-  /usr/local/bin/claw --model "$AGENT_MODEL" "${args[@]}"
+  /usr/local/bin/agent "${cli_args[@]}"

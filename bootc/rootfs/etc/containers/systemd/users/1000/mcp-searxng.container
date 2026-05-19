@@ -1,0 +1,41 @@
+[Unit]
+Description=MCP server bridging the clawx agent to the local SearXNG instance
+# Wants= (soft) instead of Requires= (hard) so a transient searxng startup
+# failure (e.g. slow first-boot image pull) does not leave mcp-searxng
+# permanently in "dependency failed". mcp-searxng can start without
+# searxng up; calls fail at tool-invocation time and the agent sees a
+# tool error rather than a missing MCP server. Once searxng recovers,
+# subsequent tool calls work.
+After=network-online.target searxng.service
+Wants=searxng.service
+StartLimitBurst=10
+StartLimitIntervalSec=300
+
+[Container]
+# Image= placeholder is rewritten at bootc-image-build to point at the
+# clawx-runtime image, which has mcp-searxng installed globally via npm
+# (see bootc/clawx-runtime/Containerfile). Reusing clawx-runtime avoids a
+# second OCI image to maintain or mirror, while keeping mcp-searxng in its
+# own container with no agent env/secrets/mounts (trust-class pattern).
+Image=quay.io/fedora/fedora:mcp-searxng-placeholder
+ContainerName=mcp-searxng
+Pull=missing
+RunInit=true
+Network=clawx-isolated.network
+# Speaks to SearXNG by container name on the isolated bridge. No external
+# egress required — stdio/SSE between agent and this server on
+# clawx-isolated, plus HTTP from this server to searxng:8080.
+Environment=SEARXNG_URL=http://searxng:8080
+# Without MCP_HTTP_PORT mcp-searxng falls back to stdio transport, which is
+# not reachable from opencode's remote-MCP config. Setting MCP_HTTP_PORT
+# starts the HTTP transport on /mcp (the path opencode connects to).
+Environment=MCP_HTTP_PORT=3000
+Exec=/usr/local/bin/mcp-searxng
+
+[Service]
+TimeoutStartSec=120
+Restart=on-failure
+RestartSec=10s
+
+# [Install] section appended at image build for AGENT_KIND=opencode only;
+# see searxng.container for the same logic.

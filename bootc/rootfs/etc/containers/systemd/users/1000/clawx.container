@@ -1,5 +1,5 @@
 [Unit]
-Description=claw-code runtime on tank-os rootless Podman architecture
+Description=Agent runtime on tank-os rootless Podman architecture
 
 [Container]
 Image=quay.io/fedora/fedora:placeholder
@@ -8,15 +8,58 @@ Pull=missing
 RunInit=true
 UserNS=keep-id
 User=%U:%G
-Volume=/usr/local/bin/claw:/usr/local/bin/claw:ro
+# Pin SELinux MCS to a fixed pair shared with service-gator. See the comment
+# on the workspaces Volume= below for why. The numeric values are arbitrary
+# but must match those in service-gator.container exactly.
+SecurityLabelLevel=s0:c200,c500
+Volume=/usr/local/bin/agent:/usr/local/bin/agent:ro
+# CLAUDE.md and AGENTS.md point at the same root-owned source so both
+# claw-code (CLAUDE.md) and opencode (AGENTS.md) find their expected file.
 Volume=/etc/clawx/CLAUDE.md:/home/clawx/CLAUDE.md:ro
+Volume=/etc/clawx/CLAUDE.md:/home/clawx/AGENTS.md:ro
+# Belt-and-braces against opencode auto-update: the proxy allowlist is the
+# structural defence; this mount makes the disabled flag explicit. Assumes
+# claw-code does not consult ~/.config/opencode/ — invariant, not derived.
+# %h/workspaces is shared with service-gator. SELinux :Z normally assigns a
+# fresh private MCS pair on every container start — with two containers
+# sharing the volume, whichever one restarted last would steal the label and
+# lock the other one out (EACCES inside, even though host perms are
+# 0700-clawx). Fix: SecurityLabelLevel below pins BOTH containers to the
+# same explicit MCS pair, so :Z relabels the volume to that fixed pair on
+# every start and they no longer fight. MCS isolation against unrelated
+# containers is preserved (the fixed pair is unique to tank-agent-os);
+# isolation between the two cooperating containers is intentionally relaxed
+# (the trust model already has them sharing this directory anyway).
 Volume=%h/.clawx:/home/clawx/.clawx:Z
 Volume=%h/workspaces:/home/clawx/workspaces:Z
+# opencode config mounted inside XDG_CONFIG_HOME (see below) so the agent can
+# read the autoupdate-disabled config AND write its own plugin/agent files
+# next to it. The file itself stays root-owned ro; only siblings are writable.
+Volume=/etc/clawx/opencode-config.json:/home/clawx/.clawx/xdg-config/opencode/config.json:ro
 Network=clawx-isolated.network
 Environment=HOME=/home/clawx
 Environment=TERM=xterm-256color
+# opencode follows XDG and would otherwise write under ~/.local/, ~/.cache/,
+# ~/.config/ — all root-owned in the container, so mkdir fails. Redirect every
+# XDG path into ~/.clawx/ which is already the agent's writable mount. Keeps
+# the two-writable-paths invariant (.clawx + workspaces); claw-code ignores
+# these vars.
+Environment=XDG_CONFIG_HOME=/home/clawx/.clawx/xdg-config
+Environment=XDG_DATA_HOME=/home/clawx/.clawx/xdg-data
+Environment=XDG_CACHE_HOME=/home/clawx/.clawx/xdg-cache
+Environment=XDG_STATE_HOME=/home/clawx/.clawx/xdg-state
+# Build-time opt-in for agent persistent memory. The literal __placeholder__
+# below is sed-substituted at bootc image build with the AGENT_MEMORY_PERSIST
+# ARG value (default "false"). When true, clawx-init symlinks the agent's
+# memory directory into ~/.clawx/, surviving container restarts. See
+# docs/memory.md for the threat-model trade-off.
+Environment=AGENT_MEMORY_PERSIST=__placeholder__
 WorkingDir=/home/clawx/workspaces
-Exec=sleep infinity
+# clawx-init seeds the pre-baked @opencode-ai/plugin SDK into XDG_CONFIG_HOME
+# (idempotent) and then exec's sleep infinity. See clawx-runtime/Containerfile
+# for the bake step and the security rationale (closes opencode's runtime npm
+# trip to fetch the plugin SDK on every startup).
+Exec=/usr/local/bin/clawx-init
 
 [Service]
 ExecStartPre=/usr/libexec/tank-os/bootstrap-clawx

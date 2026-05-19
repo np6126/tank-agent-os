@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Generates /etc/clawx/searxng-settings.yml from searxng-settings.yml.template
+# by substituting __CLAWX_PROXY_URL__ with the value read from
+# /etc/clawx/proxy.env. SearXNG ignores HTTP_PROXY env vars, so this is the
+# only way to route its upstream-engine traffic through the egress proxy.
+#
+# Runs:
+#   - at boot via clawx-searxng-settings.service, ordered after
+#     cloud-config.service so /etc/clawx/proxy.env exists when the
+#     ConditionPathExists guard is evaluated.
+#   - NOT auto-triggered on operator edits to proxy.env (no .path watcher;
+#     inotify storms at first boot fanned out into 100 .service starts).
+#     Operator runs `sudo systemctl restart clawx-searxng-settings.service`
+#     after editing proxy.env, paired with the existing
+#     `sudo systemctl restart clawx-nftables.service` step.
+#
+# Runs as root. Output is root-owned, ro-mounted into the searxng container.
+
+template=/etc/clawx/searxng-settings.yml.template
+target=/etc/clawx/searxng-settings.yml
+proxy_env=/etc/clawx/proxy.env
+tmp="${target}.tmp"
+log=/var/log/clawx-searxng-settings.log
+
+# clawx user lacks systemd-journal group access, so the unit's journal output
+# is invisible from inside the VM. Mirror each invocation to a world-readable
+# /var/log file for post-mortem. Cap at 100 KiB so repeated proxy.env edits
+# don't grow this unbounded — clawx-searxng-settings is not a security log.
+trace() {
+    [ -f "$log" ] && [ "$(stat -c %s "$log" 2>/dev/null || echo 0)" -gt 102400 ] && : > "$log"
+    printf '%s\n' "$*" >> "$log" 2>/dev/null || true
+}
+chmod 0644 "$log" 2>/dev/null || true
+
+trace "=== $(date -Iseconds) pid=$$ ==="
+
+if [ ! -r "$template" ]; then
+  trace "$template missing — nothing to do"
+  exit 0
+fi
+
+CLAWX_PROXY_URL=""
+if [ -r "$proxy_env" ]; then
+  # shellcheck disable=SC1090
+  . "$proxy_env"
+fi
+trace "CLAWX_PROXY_URL=${CLAWX_PROXY_URL:-<empty>}"
+
+if [ -z "${CLAWX_PROXY_URL:-}" ]; then
+  trace "CLAWX_PROXY_URL not set, leaving placeholder"
+  cp "$template" "$tmp"
+else
+  sed "s|__CLAWX_PROXY_URL__|${CLAWX_PROXY_URL}|g" "$template" > "$tmp"
+fi
+chmod 0644 "$tmp"
+
+# Idempotency: skip restart when output didn't change.
+if [ -f "$target" ] && cmp -s "$tmp" "$target"; then
+  rm -f "$tmp"
+  trace "no change, skipping mv+restart"
+  exit 0
+fi
+mv "$tmp" "$target"
+trace "wrote $target size=$(stat -c %s "$target")"
+
+# Restart user services only if the clawx session is up.
+if ! loginctl show-user clawx 2>/dev/null | grep -q '^State=active'; then
+  trace "clawx user session not active, skip restart"
+  exit 0
+fi
+trace "restarting user searxng + mcp-searxng"
+runuser -u clawx -- env XDG_RUNTIME_DIR=/run/user/1000 \
+  systemctl --user restart searxng.service mcp-searxng.service 2>>"$log" || true

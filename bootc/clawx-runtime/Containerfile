@@ -1,5 +1,11 @@
 ARG FEDORA_CONTAINER_IMAGE=quay.io/fedora/fedora
 ARG FEDORA_CONTAINER_REF=44
+# UID/GID of the in-container agent user. Must match the bootc image's
+# CLAWX_UID/CLAWX_GID (bootc/Containerfile) and the user-1000 Quadlet
+# directory layout — `users/1000/clawx.container` ships User=%U:%G plus
+# UserNS=keep-id, both of which assume 1000.
+ARG CLAWX_UID=1000
+ARG CLAWX_GID=1000
 ARG ANDROID_CMDLINE_TOOLS_VERSION=11076708
 ARG GRADLE_VERSION=8.13
 ARG KOTLIN_VERSION=2.1.21
@@ -31,6 +37,7 @@ RUN set -eux; \
       procps-ng \
       python3 \
       python3-pip \
+      ripgrep \
       rsync \
       tree \
       unzip \
@@ -40,6 +47,76 @@ RUN set -eux; \
       zip; \
     dnf clean all; \
     rm -rf /var/cache/dnf /var/log/dnf*
+
+# mcp-searxng MCP server (used by opencode for web search). Installed from
+# the public npm registry with --ignore-scripts to block post-install code
+# execution from any dependency. The mcp-searxng.container Quadlet runs this
+# binary in its own container; it does not share env with the agent (no API
+# keys), matching the trust-class pattern of service-gator.
+ARG MCP_SEARXNG_VERSION=1.0.3
+RUN npm install -g --ignore-scripts "mcp-searxng@${MCP_SEARXNG_VERSION}"
+
+# Pre-bake the @opencode-ai/plugin SDK that opencode tries to background-install
+# from npm on every startup. Without this, opencode reaches out to
+# registry.npmjs.org at runtime, fetches arbitrary JS, and tries to mkdir
+# /home/clawx/.npm (outside the two writable mounts → EACCES + 60s retry hang).
+# By dropping the resolved node_modules into the image read-only layer at build
+# time, opencode finds the SDK already installed and skips the npm call entirely
+# — keeps the runtime supply-chain closed.
+#
+# Pin: version is locked to OPENCODE_PLUGIN_VERSION (should match the opencode
+# binary's InstallationVersion, which is OPENCODE_REF in bootc/Containerfile).
+# The tarball SHA-256 is verified ourselves before letting npm pull transitive
+# deps — npm's own integrity check covers the transitive tree (same trust model
+# as mcp-searxng above).
+ARG OPENCODE_PLUGIN_VERSION=1.15.4
+ARG OPENCODE_PLUGIN_SHA256=c49dc5d3d6a887e90397b632d864560c0fb03dce2d55dd37e86d536ea5126e39
+RUN set -eux; \
+    BAKE_DIR=/usr/share/tank-os/opencode-plugin-bake; \
+    mkdir -p "${BAKE_DIR}"; \
+    curl -fsSL \
+      "https://registry.npmjs.org/@opencode-ai/plugin/-/plugin-${OPENCODE_PLUGIN_VERSION}.tgz" \
+      -o /tmp/plugin.tgz; \
+    actual=$(sha256sum /tmp/plugin.tgz | awk '{print $1}'); \
+    if [ "${actual}" != "${OPENCODE_PLUGIN_SHA256}" ]; then \
+      printf '\nERROR: @opencode-ai/plugin sha256 mismatch.\n' >&2; \
+      printf '  expected: %s\n' "${OPENCODE_PLUGIN_SHA256}" >&2; \
+      printf '  actual:   %s\n' "${actual}" >&2; \
+      exit 1; \
+    fi; \
+    cd "${BAKE_DIR}"; \
+    printf '{"dependencies":{"@opencode-ai/plugin":"%s"}}\n' \
+      "${OPENCODE_PLUGIN_VERSION}" > package.json; \
+    npm install --ignore-scripts --no-audit --no-fund \
+      --cache /tmp/npm-cache; \
+    # Keep package-lock.json: opencode's Npm.install does a "dirty" check that
+    # compares declared deps against lockfile entries. Missing lockfile → it
+    # reifies via @npmcli/arborist → tries to write npm cache → mkdir
+    # /home/clawx/.npm fails. With our lock in place, the check passes and
+    # opencode skips the install path entirely (verified empirically).
+    rm -rf /tmp/plugin.tgz /tmp/npm-cache
+
+# /home/clawx must be writable by the in-container agent user so that
+# clawx-init can create the ~/.claude/skills and ~/.claude/projects
+# symlinks that bridge claw-code's lookup paths into the host-mounted
+# ~/.clawx/ tree. The bind-mounts (~/.clawx, ~/workspaces) cover their own
+# targets, but the parent /home/clawx remains image-FS — root-owned by
+# default — and a `mkdir $HOME/.claude` in clawx-init would EACCES.
+# The agent user is mapped into the container via `User=%U:%G` +
+# `UserNS=keep-id` from the user-1000 Quadlet (clawx.container); the host
+# clawx user has uid 1000, so CLAWX_UID/CLAWX_GID default to 1000.
+# ARGs declared at the top of the file are only in scope for FROM; re-
+# declare here so the values are available to this RUN's shell expansion.
+ARG CLAWX_UID
+ARG CLAWX_GID
+RUN mkdir -p /home/clawx && chown ${CLAWX_UID}:${CLAWX_GID} /home/clawx
+
+# clawx-init runs as PID 1 in the clawx container. It seeds the pre-baked
+# plugin SDK on first start, then exec's sleep infinity. The container's
+# Quadlet sets Exec=/usr/local/bin/clawx-init explicitly. See the script for
+# the seeding logic and rationale.
+COPY clawx-init /usr/local/bin/clawx-init
+RUN chmod 0755 /usr/local/bin/clawx-init
 
 ARG ANDROID_CMDLINE_TOOLS_VERSION
 ARG GRADLE_VERSION

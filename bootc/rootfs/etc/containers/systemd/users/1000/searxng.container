@@ -1,0 +1,35 @@
+[Unit]
+Description=SearXNG self-hosted search backend for web-search MCP
+After=network-online.target
+# First boot needs to pull the searxng image (~70 MB). Default
+# StartLimitBurst (5) trips "Start request repeated too quickly" before the
+# pull finishes — widen the window so a slow pull eventually succeeds.
+StartLimitBurst=10
+StartLimitIntervalSec=300
+
+[Container]
+Image=docker.io/searxng/searxng:placeholder
+ContainerName=searxng
+Pull=missing
+RunInit=true
+# Settings file is root-owned in the bootc image and mounted ro; SearXNG
+# can read but not modify its own config.
+Volume=/etc/clawx/searxng-settings.yml:/etc/searxng/settings.yml:ro
+Network=clawx-isolated.network
+Environment=SEARXNG_BASE_URL=http://searxng:8080/
+# HTTP_PROXY / HTTPS_PROXY and CA bundle are injected at runtime by
+# tank-clawx-secrets into searxng.container.d/10-secrets.conf, so SearXNG's
+# upstream-engine calls go through the egress proxy with allowlist enforcement.
+
+[Service]
+TimeoutStartSec=120
+Restart=on-failure
+# Default RestartSec is ~100ms — too fast for image pulls. Stretch it so
+# retries land further apart and play nicely with StartLimit* above.
+RestartSec=10s
+
+# [Install] section is appended by bootc/Containerfile only when
+# AGENT_KIND=opencode (auto-enabled, web-search comes wired in opencode's
+# config). For AGENT_KIND=claw the section is omitted and the operator
+# activates manually:
+#   systemctl --user enable --now searxng.service mcp-searxng.service

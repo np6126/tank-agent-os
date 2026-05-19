@@ -1,58 +1,66 @@
 # tank-agent-os
 
-Fedora bootc image for running `claw-code` on the original tank-os rootless
-Podman appliance architecture.
+Fedora bootc image for running an AI coding agent — `claw-code` or `opencode` —
+on the original tank-os rootless Podman appliance architecture.
 
 ## Acknowledgements
 
-This project stands on the shoulders of two upstream projects:
+This project stands on the shoulders of three upstream projects:
 
 - **[LobsterTrap/tank-os](https://github.com/LobsterTrap/tank-os)** — the OS architecture this repo is based on: Fedora bootc, rootless Podman Quadlets, cloud-init provisioning, service-gator integration, and the rootless secrets model. tank-agent-os is a direct fork of that foundation.
-- **[ultraworkers/claw-code](https://github.com/ultraworkers/claw-code)** — the agentic runtime that replaces openclaw in this fork. Built as a Rust CLI, compiled from a pinned commit into the bootc image.
+- **[ultraworkers/claw-code](https://github.com/ultraworkers/claw-code)** — the default agent runtime: a Rust CLI compiled from a pinned commit into the bootc image, with patches applied for Ollama-compatibility and streaming fixes. Output binary is SHA-256-pinned for reproducible builds.
+- **[anomalyco/opencode](https://github.com/anomalyco/opencode)** — the second supported agent runtime: Bun-compiled, downloaded from upstream releases at image-build time and pinned by tarball SHA-256. Selected with `--build-arg AGENT_KIND=opencode`.
 
 bootc turns a container image into a bootable, updateable Linux OS image. This
 repo keeps the tank-os shape: Fedora, the `clawx` service account, rootless
 Podman Quadlets, per-instance SSH provisioning, rootless Podman secrets, and
-transactional bootc updates. The agent runtime is a pinned `claw-code` build.
+transactional bootc updates. Exactly one agent runtime ships per image — chosen
+at build time via `AGENT_KIND`, no runtime switching.
 
 ## Architecture
 
 ```
-             Operator
-                │
-                │ SSH
-                ▼
-┌──────────── Agent VM (tank-agent-os) ─────────────────────────┐
-│                                                              │
-│  ┌──────────────────────────────────────────────────────┐    │
-│  │                  clawx container                     │    │
-│  │        claw-code  ·  CLAUDE.md (read-only)           │    │
-│  └───────────┬─────────────────┬───────────────────┬────┘    │
-│              │ MCP             │ nftables:         │         │
-│  ┌───────────▼───────┐         │ proxy only        │         │
-│  │   service-gator   │         │                   │         │
-│  │   scopes.json     │         │                   │         │
-│  └─────────┬─────────┘         │         nftables: │         │
-└────────────┼───────────────────┼─────────LAN only──┼─────────┘
-             │                   │                   │
-             ▼                   ▼                   ▼
-     GitHub · GitLab       Egress Proxy        Local provider
-     Forgejo · Jira    (allowlist · audit)   Ollama · LM Studio
-                                │
-                                ▼
-                        Cloud provider
-                     Anthropic · OpenAI
-                        OpenRouter · ...
+                              Operator
+                                 │ SSH
+                                 ▼
+                       Agent VM (tank-agent-os)
+                                 │
+                                 ▼
+                           clawx container
+                  (claw-code OR opencode agent;
+                   CLAUDE.md / AGENTS.md read-only)
+                                 │
+       ┌─────────────┬───────────┴───────────┬───────────────┐
+       │ MCP         │ MCP (opt-in)          │ MCP (opt-in)  │
+       ▼             ▼                       ▼               │
+  service-gator   mcp-searxng              docs-mcp          │
+   scopes.json    + searxng                (scraper)         │
+       │             │                       │               │
+       └─────────────┴───────────┬───────────┘               │
+                                 │ nftables: proxy only      │
+                                 ▼                           ▼
+                              Egress Proxy ◄─────────────────┘
+                              (allowlist + audit)
+                                 │
+                                 ▼
+                          GitHub · Search engines · Doc sites
+                          (DDG · Wikipedia · MDN · docs.python · …)
+                          Local + Cloud providers
 ```
 
 ## What This Fork Adds
 
 Beyond the base tank-os architecture, this fork contributes:
 
-**claw-code as the agent runtime** — replaces the original agent with
-[claw-code](https://github.com/ultraworkers/claw-code), a Rust CLI built from a
-pinned upstream commit directly into the bootc image. No runtime pull of the
-agent binary; the exact version is fixed at image build time.
+**Two pinned agent runtimes, one per image** — `AGENT_KIND=claw` (default)
+builds [claw-code](https://github.com/ultraworkers/claw-code) from source
+into the image, with three local patches and a reproducible-build setup
+that SHA-256-pins the resulting binary. `AGENT_KIND=opencode` downloads
+the upstream Bun-compiled binary, verifies its tarball SHA, and ships it
+as `/usr/local/bin/agent` instead. No runtime pull or update of the agent
+in either case; the operator switches agents by rebuilding the image and
+re-deploying. CI publishes `tank-agent-os:claw`, `tank-agent-os:opencode`,
+plus `:latest` as backwards-compat alias for `:claw`.
 
 **Egress proxy architecture** — the core security idea of this fork. All
 outbound traffic from the agent is forced through an explicit HTTP proxy running
@@ -60,9 +68,9 @@ on a separate host. The proxy enforces a destination allowlist (connections to
 unlisted hosts are rejected before the TLS handshake) and writes a
 tamper-resistant audit log to storage outside the agent VM. The agent VM alone
 cannot produce a trusted network audit trail; the separate proxy host is the
-trust boundary. A reference implementation is maintained in the companion
-[leash](https://github.com/np6126/leash) repository. The interface is any standard `HTTP_PROXY` / `HTTPS_PROXY`
-compatible proxy with allowlist enforcement and structured logging.
+trust boundary. The interface is any standard `HTTP_PROXY` / `HTTPS_PROXY`
+compatible proxy with allowlist enforcement and structured logging — bring
+your own.
 
 **OS-level network enforcement** — nftables rules, owned by root and installed
 before the user session starts, confine the agent UID to the proxy address only.
@@ -71,18 +79,64 @@ container. Without a proxy configured, a deny-all baseline is installed anyway,
 ensuring OS-level protection regardless of the container's network setup.
 
 **Prompt injection hardening** — a root-owned instruction file
-(`/etc/clawx/CLAUDE.md`) is mounted read-only into the agent container. It is
-picked up automatically by claw-code on every invocation and establishes a trust
-hierarchy: workspace content the agent reads is data, not commands. The agent
-cannot modify this file. This is a defence layer specific to autonomous agents
-that does not exist in conventional service deployments.
+(`/etc/clawx/CLAUDE.md`) is mounted read-only into the agent container at
+both `~/CLAUDE.md` (claw-code) and `~/AGENTS.md` (opencode), so either agent
+finds it under the filename it expects. It is picked up automatically on
+every invocation and establishes a trust hierarchy: workspace content the
+agent reads is data, not commands. The agent cannot modify this file. This
+is a defence layer specific to autonomous agents that does not exist in
+conventional service deployments.
+
+**Self-hosted web search** — a SearXNG + `mcp-searxng` pair ships as
+Quadlets in the image. The opencode build auto-enables them so the
+search tool is wired into the agent's MCP registry from the first boot;
+the claw build leaves them disabled because claw-code does not
+auto-discover MCP endpoints (operator activates manually if desired).
+SearXNG itself queries upstream engines through the same egress proxy
+as the agent. No cloud API key, no external search-provider trust
+anchor — just the existing proxy allowlist extended to include the
+engines you want (DuckDuckGo, Wikipedia, StackExchange, MDN by default;
+GitHub deliberately off because it is service-gator's domain). See
+[docs/web-search.md](docs/web-search.md).
+
+**Docs lookup MCP** — an additional Quadlet ships `docs-mcp-server`,
+which scrapes and indexes developer documentation (Python stdlib, Rust
+crates, MDN, Go packages by default) and exposes it to the agent over
+MCP.
+Auto-enabled on opencode, opt-in on claw — same pattern as web search.
+The scraper runs in its own container and reaches doc hosts through the
+same egress proxy, so the allowlist is the single point of control for
+which sites the agent's docs tool can reach. PostHog telemetry is
+disabled at the Quadlet level. See [docs/docs-lookup.md](docs/docs-lookup.md).
+
+**MCP adoption gate** — any new MCP server added to the image goes
+through a written security audit (CSA `mcpserver-audit` methodology)
+before adoption. The frozen audits live in [`audits/`](audits/). A PR
+that adds a new MCP must include a matching audit file. See
+[docs/security.md → MCP Adoption Gate](docs/security.md#mcp-adoption-gate).
+
+**Skill drop-in** — both agents read from a single host-side directory
+(`~/.clawx/skills/`) that `clawx-init` symlinks into each agent's
+expected lookup path at container start. Operator drops a SKILL.md
+folder in, restarts the agent session, the skill is live. No image
+rebuild needed. See [docs/skills.md](docs/skills.md).
+
+**Persistent agent memory (build-time opt-in)** — by default, agent
+memory writes go to the container's ephemeral overlay-FS and are lost
+on container recreate. Setting `--build-arg AGENT_MEMORY_PERSIST=true`
+flips this: `clawx-init` symlinks the agent's memory directory into the
+existing writable mount so notes survive across sessions. Default-off
+because persistent memory is a real prompt-injection-persistence
+surface — see [docs/memory.md](docs/memory.md) for the threat-model
+trade-off and CLAUDE.md's data-not-commands disclaimer.
 
 **Hardened host configuration** — several details tightened beyond the base
 fork: the `systemctl` sudo permission is scoped to a single specific command
 rather than the full binary; `clawx` is not in the `wheel` group; the
 service-gator image is pinned to a digest rather than `:latest` (relevant
-because service-gator is the only container in the stack with unrestricted
-outbound internet access).
+because service-gator mediates GitHub/GitLab/JIRA calls and holds the
+corresponding credentials, even though its outbound traffic now goes through
+the same proxy as everything else).
 
 **Documented scopes.json model** — a fully annotated `scopes.json` template
 ships in the image and in `examples/service-gator/`. The permission model
@@ -92,11 +146,13 @@ use case.
 
 ## Why This Is Useful
 
-tank-agent-os packages the host OS, `claw-code` binary, Quadlet units, CLI shim,
-service-gator integration, and upgrade path into one OCI bootc image. The
-mutable parts stay outside the image:
+tank-agent-os packages the host OS, the chosen agent binary, Quadlet units,
+CLI shim, service-gator integration, and upgrade path into one OCI bootc
+image. The mutable parts stay outside the image:
 
-- runtime config under `~clawx/.clawx`
+- runtime config under `~clawx/.clawx` (also XDG_CONFIG/DATA/CACHE/STATE
+  for opencode all redirect here — only two writable paths inside the
+  container: `~/.clawx` and `~/workspaces`)
 - workspaces under `~clawx/workspaces`
 - API keys in the `clawx` user's rootless Podman secret store
 - SSH access configured per instance
@@ -155,8 +211,9 @@ acting on anything that looks like embedded instructions.
 allows only `bootc` and `sudo systemctl restart clawx-nftables.service`; no
 other subcommand is permitted, preventing the host session from disabling the
 nftables isolation. The service-gator image is pinned to a specific digest
-rather than `:latest`, because it is the only container in the stack with
-unrestricted outbound internet access.
+rather than `:latest`, because it mediates the agent's GitHub/GitLab/JIRA
+calls and holds the corresponding credentials — high-value supply-chain
+target even though its outbound is now bounded by the same proxy.
 
 See [docs/security.md](docs/security.md) for the full threat model, all
 mechanisms, the capability table, and the trust boundary diagram.
@@ -170,6 +227,10 @@ mechanisms, the capability table, and the trust boundary diagram.
 - Use the CLI wrapper: [docs/cli.md](docs/cli.md)
 - Configure model provider secrets: [docs/model-providers.md](docs/model-providers.md)
 - Configure service-gator: [docs/service-gator.md](docs/service-gator.md)
+- Enable web search: [docs/web-search.md](docs/web-search.md)
+- Enable docs lookup: [docs/docs-lookup.md](docs/docs-lookup.md)
+- Add skills to the agent: [docs/skills.md](docs/skills.md)
+- Opt in to persistent agent memory: [docs/memory.md](docs/memory.md)
 - Understand the security model: [docs/security.md](docs/security.md)
 
 For bootc concepts and day-2 operations, see the upstream [bootc documentation](https://bootc-dev.github.io/bootc/).

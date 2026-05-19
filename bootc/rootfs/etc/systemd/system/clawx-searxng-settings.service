@@ -1,0 +1,23 @@
+[Unit]
+Description=Substitute CLAWX_PROXY_URL into SearXNG settings.yml
+# Order after cloud-config.service (the cloud-init phase that runs
+# write_files): proxy.env is created there, so by the time this unit
+# evaluates ConditionPathExists below, the file is reliably present.
+After=cloud-config.service
+# No .path watcher pairs with this service — cloud-init + SELinux
+# restorecon storm proxy.env with ~100 inotify events at first boot,
+# which no .path directive (incl. PathExistsGlob's debounce) coalesces.
+# Operator edits to proxy.env require a manual restart of this unit;
+# see first-boot.md Reference table.
+ConditionPathExists=/etc/clawx/proxy.env
+
+[Service]
+Type=oneshot
+# /var/log/clawx-searxng-settings.log copy goes alongside the journal copy so
+# clawx (which lacks systemd-journal access) can still post-mortem.
+StandardOutput=journal
+StandardError=journal
+ExecStart=/usr/libexec/tank-os/gen-searxng-settings
+
+[Install]
+WantedBy=multi-user.target

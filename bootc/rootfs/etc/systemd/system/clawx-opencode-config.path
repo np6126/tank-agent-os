@@ -1,0 +1,8 @@
+[Unit]
+Description=Watch clawx agent.env and regenerate opencode config
+
+[Path]
+PathChanged=/var/home/clawx/.clawx/agent.env
+
+[Install]
+WantedBy=multi-user.target

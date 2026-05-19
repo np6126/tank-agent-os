@@ -7,6 +7,10 @@ Image=ghcr.io/cgwalters/service-gator:placeholder
 ContainerName=service-gator
 Pull=missing
 RunInit=true
+# Pin SELinux MCS to the same pair as clawx.container — see the comment on
+# the workspaces Volume= in clawx.container for the full rationale. Both
+# values MUST match or the shared :Z workspace mount races on relabel.
+SecurityLabelLevel=s0:c200,c500
 Volume=%h/.config/service-gator:/etc/service-gator:Z
 Volume=%h/workspaces:/workspaces:Z
 Network=clawx-isolated.network
@@ -17,9 +21,8 @@ Environment=JIRA_API_TOKEN_FILE=/run/secrets/jira_api_token
 Exec=--mcp-server 0.0.0.0:8080 --scope-file /etc/service-gator/scopes.json
 
 [Service]
+ExecStartPre=/usr/libexec/tank-os/bootstrap-clawx
 ExecStartPre=/usr/libexec/tank-os/bootstrap-service-gator
-ExecStartPre=sudo /usr/bin/systemctl restart clawx-nftables.service
-ExecStartPost=sudo /usr/bin/systemctl restart clawx-nftables.service
 TimeoutStartSec=300
 Restart=on-failure
 

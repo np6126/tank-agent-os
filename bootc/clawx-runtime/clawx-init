@@ -1,0 +1,64 @@
+#!/bin/sh
+# In-container init for the clawx Quadlet:
+#   1. Seed the pre-baked @opencode-ai/plugin SDK into XDG_CONFIG_HOME/opencode
+#      (idempotent — skipped if already present).
+#   2. Wire up the skill directory: a single host-side ~/.clawx/skills/ folder
+#      surfaced into both agents' expected lookup paths via symlinks.
+#   3. If AGENT_MEMORY_PERSIST=true (build-time opt-in, set via clawx.container
+#      Environment= directive), symlink claw-code's auto-memory location into
+#      ~/.clawx/ so it survives container restarts. Default OFF — memory writes
+#      go to the ephemeral overlay-FS otherwise.
+#   4. exec sleep infinity to keep the container alive; the agent binary is
+#      invoked later via `podman exec` from the host wrapper.
+#
+# Lives inside the container (not bootstrap-clawx on the host) because the
+# seed source /usr/share/tank-os/opencode-plugin-bake is in the clawx-runtime
+# image — invisible from the bootc host's filesystem namespace.
+
+set -e
+
+# 1. opencode plugin SDK seed
+TARGET="$HOME/.clawx/xdg-config/opencode"
+MARKER="$TARGET/node_modules/@opencode-ai/plugin/package.json"
+BAKE=/usr/share/tank-os/opencode-plugin-bake
+
+if [ -d "$BAKE" ] && [ ! -e "$MARKER" ]; then
+    mkdir -p "$TARGET"
+    cp -a "$BAKE/." "$TARGET/"
+fi
+
+# 2. Skill directory: one host-side dir, two symlinks into agent-expected paths
+mkdir -p "$HOME/.clawx/skills"
+
+# claw-code looks at ~/.claude/skills/. ~/.claude/ stays in the ephemeral
+# overlay-FS — only the skills subdir is bridged into the persistent mount.
+mkdir -p "$HOME/.claude"
+if [ ! -e "$HOME/.claude/skills" ]; then
+    ln -s "$HOME/.clawx/skills" "$HOME/.claude/skills"
+fi
+
+# opencode looks at $XDG_CONFIG_HOME/opencode/skills/. XDG_CONFIG_HOME is
+# already redirected into ~/.clawx/, so the symlink target is in-mount too.
+mkdir -p "$HOME/.clawx/xdg-config/opencode"
+if [ ! -e "$HOME/.clawx/xdg-config/opencode/skills" ]; then
+    ln -s "$HOME/.clawx/skills" "$HOME/.clawx/xdg-config/opencode/skills"
+fi
+
+# 3. Memory persistence (build-time opt-in via clawx.container env var)
+case "${AGENT_MEMORY_PERSIST:-false}" in
+    true|1|yes)
+        # claw-code auto-memory lives under ~/.claude/projects/<hash>/memory/.
+        # Without this symlink, those writes land in the overlay and are lost
+        # on container recreate.
+        mkdir -p "$HOME/.clawx/claude-projects"
+        if [ ! -e "$HOME/.claude/projects" ]; then
+            ln -s "$HOME/.clawx/claude-projects" "$HOME/.claude/projects"
+        fi
+        # opencode memory: whatever opencode writes under XDG_DATA_HOME lands
+        # in ~/.clawx/xdg-data/ automatically via the redirection in
+        # clawx.container — no additional symlink needed. The opt-in flag
+        # mostly matters for claw-code's separate ~/.claude/ path.
+        ;;
+esac
+
+exec sleep infinity
