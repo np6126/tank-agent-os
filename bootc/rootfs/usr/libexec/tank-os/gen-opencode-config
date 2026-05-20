@@ -18,6 +18,10 @@ tmp="${target}.tmp"
 #   auto-enabled for AGENT_KIND=opencode at image build); when their
 #   service is not enabled opencode fails the connection soft and the tool
 #   simply doesn't appear.
+# - llm-wiki is opt-in and always operator-enabled (never auto-started —
+#   it needs Gitea setup first). Listed here unconditionally for the same
+#   reason: if llm-wiki.service is not enabled the container name does not
+#   resolve on the bridge and opencode fails the connection soft.
 mcp_block='
   "mcp": {
     "service-gator": {
@@ -33,6 +37,11 @@ mcp_block='
     "docs-mcp": {
       "type": "remote",
       "url": "http://docs-mcp:6280/mcp",
+      "enabled": true
+    },
+    "llm-wiki": {
+      "type": "remote",
+      "url": "http://llm-wiki:3100/mcp",
       "enabled": true
     }
   }'

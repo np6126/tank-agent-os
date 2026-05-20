@@ -22,9 +22,10 @@ which maps to:
 ~clawx/workspaces
 ```
 
-The exact `claw-code` MCP wiring is intentionally not baked into the image yet.
-Credentials for external services should be supplied after boot through the
-`clawx` user's rootless Podman secret store.
+The service-gator MCP endpoint is wired into both agent variants
+automatically — opencode via `gen-opencode-config`, claw-code via the baked
+`/etc/clawx/claw-settings.json`. Credentials for external services should be
+supplied after boot through the `clawx` user's rootless Podman secret store.
 
 Supported secret names:
 

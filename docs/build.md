@@ -29,12 +29,12 @@ podman push <your-registry>/clawx-runtime:latest
 ### 2. Build the bootc OS image
 
 The bootc image embeds exactly one agent at build time, chosen via
-`AGENT_KIND` (default `claw`). Supported values:
+`AGENT_KIND` (default `opencode`). Supported values:
 
 | `AGENT_KIND` | Agent       | Build form                                        |
 |--------------|-------------|---------------------------------------------------|
-| `claw`       | `claw-code` | source-build (Rust/cargo) with patches            |
-| `opencode`   | `opencode`  | upstream Bun-compiled binary, SHA-pinned download |
+| `opencode`   | `opencode`  | upstream Bun-compiled binary, SHA-pinned download (default) |
+| `claw`       | `claw-code` | source-build (Rust/cargo) with patches (experimental) |
 
 One agent per image — no runtime switching. The host wrapper
 (`/usr/local/bin/clawx`) reads `/etc/clawx/agent.kind` to know which agent's
@@ -46,23 +46,23 @@ build context directory in this repo:
 For x86_64. The agent variant is encoded in the tag, not the image name:
 
 ```bash
-# claw build (default)
-podman build \
-  --platform linux/amd64 \
-  --build-arg AGENT_KIND=claw \
-  --build-arg CLAWX_RUNTIME_IMAGE=<your-registry>/clawx-runtime \
-  --build-arg CLAWX_RUNTIME_REF=latest \
-  -t localhost/tank-agent-os:claw \
-  -f bootc/Containerfile \
-  bootc
-
-# opencode build
+# opencode build (default)
 podman build \
   --platform linux/amd64 \
   --build-arg AGENT_KIND=opencode \
   --build-arg CLAWX_RUNTIME_IMAGE=<your-registry>/clawx-runtime \
   --build-arg CLAWX_RUNTIME_REF=latest \
   -t localhost/tank-agent-os:opencode \
+  -f bootc/Containerfile \
+  bootc
+
+# claw build (experimental)
+podman build \
+  --platform linux/amd64 \
+  --build-arg AGENT_KIND=claw \
+  --build-arg CLAWX_RUNTIME_IMAGE=<your-registry>/clawx-runtime \
+  --build-arg CLAWX_RUNTIME_REF=latest \
+  -t localhost/tank-agent-os:claw \
   -f bootc/Containerfile \
   bootc
 ```
@@ -75,8 +75,8 @@ The CI workflow publishes:
 | `tank-agent-os:claw-<sha>`        | pinned claw build for commit `<sha>`    |
 | `tank-agent-os:opencode`          | latest opencode build                   |
 | `tank-agent-os:opencode-<sha>`    | pinned opencode build for commit `<sha>`|
-| `tank-agent-os:latest`            | alias for `:claw` (backwards-compat)    |
-| `tank-agent-os:<sha>`             | alias for `:claw-<sha>` (backwards-compat) |
+| `tank-agent-os:latest`            | alias for `:opencode` (the default agent) |
+| `tank-agent-os:<sha>`             | alias for `:opencode-<sha>`             |
 
 For Apple Silicon, swap `linux/amd64` for `linux/arm64`. For opencode on
 arm64, also override `OPENCODE_ASSET=opencode-linux-arm64.tar.gz` and the
@@ -88,8 +88,8 @@ live in `bootc/Containerfile`:
 ```env
 # claw-code (source build, patches applied)
 CLAW_CODE_REPO=https://github.com/ultraworkers/claw-code.git
-CLAW_CODE_REF=63ce483c2788a96f470acd4625d8540292bdd16e
-CLAW_CODE_SHA256=88e8b34f...        # see "Reproducible build" below
+CLAW_CODE_REF=f8e1bb7262b261da1ee6bfcd461bfc5b676f6a6d
+CLAW_CODE_SHA256=                   # see "Reproducible build" below
 
 # opencode (upstream binary download)
 OPENCODE_RELEASE_BASE=https://github.com/anomalyco/opencode/releases/download
@@ -108,7 +108,7 @@ differs:
 
 | Agent     | What is pinned             | What is verified                     |
 |-----------|----------------------------|--------------------------------------|
-| `claw`    | Git commit + 3 patches     | SHA-256 of the locally-built binary  |
+| `claw`    | Git commit + 5 patches     | SHA-256 of the locally-built binary  |
 | `opencode`| Upstream release tag + asset | SHA-256 of the downloaded tarball   |
 
 For claw, the trust surface includes our toolchain (Fedora `rust`) and the
@@ -186,7 +186,7 @@ agent variant is installed.
 
 ## CI: Built tags
 
-`.gitea/workflows/build.yml` publishes per push to `main`:
+`.github/workflows/build.yml` publishes per push to `main`:
 
 | Tag                              | Points at                                            |
 |----------------------------------|------------------------------------------------------|
@@ -194,8 +194,8 @@ agent variant is installed.
 | `tank-agent-os:claw-<sha>`        | pinned claw build for that commit                    |
 | `tank-agent-os:opencode`          | latest opencode build                                |
 | `tank-agent-os:opencode-<sha>`    | pinned opencode build for that commit                |
-| `tank-agent-os:latest`            | alias for `:claw` (backwards-compat)                 |
-| `tank-agent-os:<sha>`             | alias for `:claw-<sha>` (backwards-compat)           |
+| `tank-agent-os:latest`            | alias for `:opencode` (the default agent)            |
+| `tank-agent-os:<sha>`             | alias for `:opencode-<sha>`                          |
 
 ## Build A Disk Image With Podman Desktop
 

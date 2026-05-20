@@ -3,10 +3,13 @@
 # be overridden at build time with --build-arg without editing the Containerfile.
 ARG FEDORA_BOOTC_IMAGE=quay.io/fedora/fedora-bootc
 ARG FEDORA_BOOTC_REF=latest
-# One agent per image, no runtime switching. Valid AGENT_KIND: claw, opencode.
-ARG AGENT_KIND=claw
+# One agent per image, no runtime switching. Valid AGENT_KIND: opencode,
+# claw. opencode is the default and recommended runtime. claw-code is
+# experimental — its MCP client needs the mcp-proxy bridge and a local
+# patch (see bootc/patches/claw-fix-mcp-stdio-framing.patch).
+ARG AGENT_KIND=opencode
 ARG CLAW_CODE_REPO=https://github.com/ultraworkers/claw-code.git
-ARG CLAW_CODE_REF=63ce483c2788a96f470acd4625d8540292bdd16e
+ARG CLAW_CODE_REF=f8e1bb7262b261da1ee6bfcd461bfc5b676f6a6d
 # Expected SHA-256 of the built claw-code binary. Empty = record only
 # (first build, or after a Fedora rustc toolchain bump). Non-empty = enforce:
 # any drift (Cargo.lock change, patch tamper, toolchain compromise) fails the
@@ -16,7 +19,7 @@ ARG CLAW_CODE_REF=63ce483c2788a96f470acd4625d8540292bdd16e
 # the current FEDORA_BOOTC_REF base — check the build summary for the exact
 # rustc version. arm64 builds produce a different hash; override with
 # --build-arg when building for arm64.
-ARG CLAW_CODE_SHA256=7bd491ca1d344cf6439e55fe4f894b3eef4533bd1226456056f14b620a31b67d
+ARG CLAW_CODE_SHA256=
 # opencode ships pre-built single-binaries upstream; we download and verify
 # rather than compile. Trust surface == service-gator (digest-pinned).
 ARG OPENCODE_RELEASE_BASE=https://github.com/anomalyco/opencode/releases/download
@@ -43,6 +46,13 @@ ARG SEARXNG_REF=sha256:25ff3c045548971d12726e54bea4564b8ec3bedb3d6951aecdefd01ca
 # telemetry kill-switch is wired in the Quadlet env, not here.
 ARG DOCS_MCP_IMAGE=ghcr.io/arabold/docs-mcp-server
 ARG DOCS_MCP_REF=sha256:a00a30040bac410678c175dcf8b60f5fed6357cf761bcc5a63ab56383ae3e8a9
+# mcp-llm-wiki: opt-in git-backed LLM-wiki MCP. Built from the separate
+# mcp-llm-wiki repo and published to the Gitea registry. Same digest-pin
+# pattern as the MCPs above. Always operator-enabled (no [Install]) —
+# it needs Gitea service-account + token setup first; see
+# docs/llm-wiki.md and audits/llm-wiki-server-2026-05-20.md.
+ARG MCP_LLM_WIKI_IMAGE=ghcr.io/np6126/mcp-llm-wiki
+ARG MCP_LLM_WIKI_REF=sha256:ef604a9a320e511a99484afa96519ac8a4d72ec8e606cfb82185027eee5bcf90
 # Build-time opt-in for agent persistent memory. Default OFF: agent memory
 # writes go to the container's ephemeral overlay-FS and are lost on
 # container recreate. Set to "true" at image build to symlink the agent's
@@ -97,6 +107,8 @@ RUN set -eux; \
     git apply /build/patches/claw-fix-stream-newlines.patch; \
     git apply /build/patches/claw-add-think-block-filter.patch; \
     git apply /build/patches/claw-fix-openai-prefix-strip.patch; \
+    git apply /build/patches/claw-fix-mcp-stdio-framing.patch; \
+    git apply /build/patches/claw-lock-project-config.patch; \
     cd rust; \
     grep -q '"rustls-tls"' crates/api/Cargo.toml; \
     sed -i 's/features = \["json", "rustls-tls"\]/features = ["json", "rustls-tls-native-roots"]/' crates/api/Cargo.toml; \
@@ -173,6 +185,8 @@ ARG SEARXNG_IMAGE
 ARG SEARXNG_REF
 ARG DOCS_MCP_IMAGE
 ARG DOCS_MCP_REF
+ARG MCP_LLM_WIKI_IMAGE
+ARG MCP_LLM_WIKI_REF
 ARG AGENT_MEMORY_PERSIST
 ARG CLAWX_RUNTIME_IMAGE
 ARG CLAWX_RUNTIME_REF
@@ -262,6 +276,9 @@ RUN set -eux; \
       "s|^Image=ghcr.io/arabold/docs-mcp-server:placeholder$|Image=${DOCS_MCP_IMAGE}@${DOCS_MCP_REF}|" \
       /etc/containers/systemd/users/1000/docs-mcp.container; \
     sed -i \
+      "s|^Image=localhost/mcp-llm-wiki:placeholder$|Image=${MCP_LLM_WIKI_IMAGE}@${MCP_LLM_WIKI_REF}|" \
+      /etc/containers/systemd/users/1000/llm-wiki.container; \
+    sed -i \
       "s|^Environment=AGENT_MEMORY_PERSIST=__placeholder__$|Environment=AGENT_MEMORY_PERSIST=${AGENT_MEMORY_PERSIST}|" \
       /etc/containers/systemd/users/1000/clawx.container
 
@@ -282,6 +299,7 @@ RUN set -eux; \
       /usr/share/tank-os/scopes.json.example \
       /etc/clawx/CLAUDE.md \
       /etc/clawx/opencode-config.json \
+      /etc/clawx/claw-settings.json \
       /etc/clawx/searxng-settings.yml.template; \
     chmod 0440 /etc/sudoers.d/clawx; \
     chown -R clawx:clawx /var/home/clawx; \

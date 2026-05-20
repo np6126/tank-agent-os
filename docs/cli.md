@@ -58,6 +58,42 @@ export CLAWX_CONTAINER=clawx-research
 clawx --version
 ```
 
+## Self-test
+
+`clawx doctor` runs a containment self-test. With functional probes — not
+rule inspection — it checks that the VM's isolation is in force and the
+runtime is healthy: runtime config, the agent container, agent-binary
+integrity, that direct (non-proxy) egress is blocked, that the egress
+proxy reaches the model host, the read-only instruction file, MCP
+connectivity, and the sidecar containers.
+
+```bash
+clawx doctor
+```
+
+Sample output from a healthy opencode VM:
+
+```text
+clawx doctor — tank-agent-os containment self-test
+container: clawx   agent: opencode
+
+  PASS  runtime config: AGENT_PROVIDER / BASE_URL / MODEL set in agent.env
+  PASS  clawx container 'clawx' is running
+  PASS  agent binary matches the build-recorded SHA-256
+  PASS  nftables: direct non-proxy egress from the container is blocked
+  PASS  egress proxy reaches the allowlisted model host (HTTP 200)
+  PASS  instruction file: CLAUDE.md + AGENTS.md present and read-only
+  PASS  MCP servers: 'agent mcp list' reports no failures
+  PASS  service-gator container is running
+
+summary: 8 pass, 0 warn, 0 fail
+```
+
+Each check prints `PASS`, `WARN`, or `FAIL`; the command exits non-zero
+if anything FAILs, so it is usable in scripts and post-deploy gates. It
+runs even when the agent container is stopped — diagnosing that is one
+of its jobs.
+
 For low-level debugging, use Podman directly:
 
 ```bash

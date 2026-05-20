@@ -1,5 +1,9 @@
 [Network]
-Subnet=172.20.0.0/29
+# /28 = 13 usable host slots after the gateway. The bridge carries
+# clawx, service-gator, mcp-searxng, searxng, docs-mcp and llm-wiki
+# today (6); /29 (5 slots) could not fit the sixth. The widening to
+# /28 leaves headroom for further opt-in MCP containers.
+Subnet=172.20.0.0/28
 Gateway=172.20.0.1
 DNS=172.20.0.1
 Label=tank-os=clawx-isolated

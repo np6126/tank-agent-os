@@ -63,13 +63,13 @@ fi
 # Login to the container registry for pulling the clawx-runtime image.
 # Registry is derived from the Image= line in the Quadlet unit so this works
 # regardless of which registry the image was pushed to.
-if podman secret inspect gitea_registry_password >/dev/null 2>&1; then
+if podman secret inspect registry_password >/dev/null 2>&1; then
     _image_line=$(grep -m1 '^Image=' /etc/containers/systemd/users/1000/clawx.container 2>/dev/null || true)
     if [[ -n "$_image_line" ]]; then
         _registry="${_image_line#Image=}"
         _registry="${_registry%%/*}"
-        _user=$(podman secret inspect gitea_registry_user --showsecret --format '{{.SecretData}}' 2>/dev/null || true)
-        _pass=$(podman secret inspect gitea_registry_password --showsecret --format '{{.SecretData}}' 2>/dev/null || true)
+        _user=$(podman secret inspect registry_user --showsecret --format '{{.SecretData}}' 2>/dev/null || true)
+        _pass=$(podman secret inspect registry_password --showsecret --format '{{.SecretData}}' 2>/dev/null || true)
         if [[ -n "$_pass" ]]; then
             if ! printf '%s\n' "$_pass" | podman login "$_registry" \
                 --username "${_user:-clawx}" \
@@ -80,5 +80,10 @@ if podman secret inspect gitea_registry_password >/dev/null 2>&1; then
     fi
 fi
 
-# Remove any existing container so Podman always creates it fresh.
-podman rm -f clawx 2>/dev/null || true
+# No explicit `podman rm` here: the Quadlet-generated clawx.service runs
+# `podman run --name clawx --replace`, which already recreates the
+# container fresh. An explicit rm would also be wrong — this script is a
+# shared ExecStartPre of BOTH clawx.service and service-gator.service (so
+# the merged CA bundle is built regardless of start order), and removing
+# the clawx container from service-gator's pre-hook bounced clawx on
+# every service-gator (re)start.

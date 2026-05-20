@@ -10,7 +10,16 @@ permissions:
   packages: write
 
 jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: SELinux MCS shared-mount guard
+        run: bash tools/check-selinux-mcs.sh
+
   build:
+    needs: guard
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
