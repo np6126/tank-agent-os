@@ -1,0 +1,108 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="1110" viewBox="0 0 1240 1110"
+     font-family="'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif">
+  <!-- tank-agent-os trust boundaries. Hand-authored SVG; dark brand theme. Edit coordinates directly to maintain. -->
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#5a646c"/>
+    </marker>
+    <filter id="sh" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#000000" flood-opacity="0.55"/>
+    </filter>
+  </defs>
+
+  <rect width="1240" height="1110" fill="#15181b"/>
+
+  <!-- ===== Trust boundary: agent VM ===== -->
+  <rect x="44" y="44" width="1152" height="724" rx="18" fill="#1a1e22" stroke="#333a42" stroke-width="1.5"/>
+  <rect x="62" y="30" width="252" height="30" rx="9" fill="#22262b" stroke="#333a42" stroke-width="1"/>
+  <text x="188" y="50" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="12.5" font-weight="600" fill="#9aa3a9">Trust boundary &#183; agent VM</text>
+
+  <!-- ===== Trust boundary: proxy host ===== -->
+  <rect x="330" y="824" width="580" height="168" rx="18" fill="#241a18" stroke="#cf6b5c" stroke-width="1.5"/>
+  <rect x="348" y="810" width="266" height="30" rx="9" fill="#3a2420" stroke="#5a342e" stroke-width="1"/>
+  <text x="481" y="830" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="12.5" font-weight="600" fill="#e0958a">Trust boundary &#183; proxy host</text>
+
+  <!-- ===== edges ===== -->
+  <g fill="none" stroke="#5a646c" stroke-width="2">
+    <path d="M620,188 L620,238" stroke-dasharray="6 5" marker-end="url(#arr)"/>
+    <path d="M500,326 L224,406" marker-end="url(#arr)"/>
+    <path d="M560,326 L488,406" marker-end="url(#arr)"/>
+    <path d="M680,326 L752,406" marker-end="url(#arr)"/>
+    <path d="M740,326 L1018,406" marker-end="url(#arr)"/>
+    <path d="M486,478 L486,502" marker-end="url(#arr)"/>
+    <path d="M218,534 L438,640" marker-end="url(#arr)"/>
+    <path d="M486,574 L540,640" marker-end="url(#arr)"/>
+    <path d="M754,510 L688,640" marker-end="url(#arr)"/>
+    <path d="M1022,510 L802,640" marker-end="url(#arr)"/>
+    <path d="M400,286 L88,286 Q72,286 72,302 L72,674 Q72,690 88,690 L352,690" marker-end="url(#arr)"/>
+    <path d="M620,734 L620,856" marker-end="url(#arr)"/>
+    <path d="M620,964 L620,1028" marker-end="url(#arr)"/>
+  </g>
+
+  <!-- ===== config (root-owned, read-only) ===== -->
+  <rect x="310" y="84" width="620" height="104" rx="12" fill="#1a1e22" stroke="#333a42" stroke-width="1.5" filter="url(#sh)"/>
+  <text x="620" y="118" text-anchor="middle" font-size="15" font-weight="700" fill="#c5cdd2">Config &#183; root-owned &#183; read-only</text>
+  <text x="620" y="143" text-anchor="middle" font-size="12.5" fill="#8b949c">/etc/clawx/CLAUDE.md  &#8594;  ~/CLAUDE.md + ~/AGENTS.md</text>
+  <text x="620" y="166" text-anchor="middle" font-size="12.5" fill="#8b949c">/etc/clawx/opencode-config.json  &#183;  from agent.env</text>
+
+  <!-- ===== clawx container ===== -->
+  <rect x="400" y="246" width="440" height="80" rx="12" fill="#1a2a25" stroke="#5db89c" stroke-width="1.6" filter="url(#sh)"/>
+  <text x="620" y="282" text-anchor="middle" font-size="15.5" font-weight="700" fill="#e8eaed">clawx container</text>
+  <text x="620" y="304" text-anchor="middle" font-size="12.5" fill="#9fd8c6">no CAP_NET_ADMIN &#183; no sudo</text>
+
+  <!-- ===== service-gator ===== -->
+  <rect x="100" y="414" width="236" height="120" rx="12" fill="#1a2a25" stroke="#5db89c" stroke-width="1.6" filter="url(#sh)"/>
+  <text x="218" y="450" text-anchor="middle" font-size="15" font-weight="700" fill="#e8eaed">service-gator</text>
+  <text x="218" y="472" text-anchor="middle" font-size="12" fill="#9fd8c6">scopes.json allowlist</text>
+  <text x="218" y="492" text-anchor="middle" font-size="11.5" fill="#7fc4ad">GitHub / GitLab / JIRA</text>
+  <text x="218" y="511" text-anchor="middle" font-size="11.5" fill="#7fc4ad">single audit trail</text>
+
+  <!-- ===== mcp-searxng (opt-in) ===== -->
+  <rect x="368" y="414" width="236" height="64" rx="12" fill="#1a2329" stroke="#5b8b9c" stroke-width="1.6" stroke-dasharray="6 5" filter="url(#sh)"/>
+  <text x="486" y="442" text-anchor="middle" font-size="14.5" font-weight="700" fill="#d3dde1">mcp-searxng</text>
+  <text x="486" y="462" text-anchor="middle" font-size="11" fill="#7aa3b0">opt-in</text>
+
+  <!-- ===== docs-mcp (opt-in) ===== -->
+  <rect x="636" y="414" width="236" height="96" rx="12" fill="#1a2329" stroke="#5b8b9c" stroke-width="1.6" stroke-dasharray="6 5" filter="url(#sh)"/>
+  <text x="754" y="446" text-anchor="middle" font-size="14.5" font-weight="700" fill="#d3dde1">docs-mcp</text>
+  <text x="754" y="468" text-anchor="middle" font-size="12" fill="#93b8c4">scraper + index DB</text>
+  <text x="754" y="488" text-anchor="middle" font-size="11" fill="#7aa3b0">opt-in</text>
+
+  <!-- ===== llm-wiki (opt-in) ===== -->
+  <rect x="904" y="414" width="236" height="96" rx="12" fill="#1a2329" stroke="#5b8b9c" stroke-width="1.6" stroke-dasharray="6 5" filter="url(#sh)"/>
+  <text x="1022" y="446" text-anchor="middle" font-size="14.5" font-weight="700" fill="#d3dde1">llm-wiki</text>
+  <text x="1022" y="468" text-anchor="middle" font-size="12" fill="#93b8c4">git-backed wiki</text>
+  <text x="1022" y="488" text-anchor="middle" font-size="11" fill="#7aa3b0">opt-in</text>
+
+  <!-- ===== searxng (opt-in) ===== -->
+  <rect x="368" y="510" width="236" height="64" rx="12" fill="#1a2329" stroke="#5b8b9c" stroke-width="1.6" stroke-dasharray="6 5" filter="url(#sh)"/>
+  <text x="486" y="538" text-anchor="middle" font-size="14" font-weight="700" fill="#d3dde1">searxng container</text>
+  <text x="486" y="558" text-anchor="middle" font-size="11" fill="#7aa3b0">opt-in</text>
+
+  <!-- ===== host nftables (choke point) ===== -->
+  <rect x="360" y="648" width="520" height="86" rx="12" fill="#2a2316" stroke="#e0a458" stroke-width="2.4" filter="url(#sh)"/>
+  <text x="620" y="684" text-anchor="middle" font-size="14.5" font-weight="700" fill="#f0c07a">host nftables &#183; OUTPUT chain</text>
+  <text x="620" y="707" text-anchor="middle" font-size="12.5" fill="#cf9a52">proxy destination only</text>
+
+  <!-- ===== egress proxy ===== -->
+  <rect x="380" y="864" width="480" height="100" rx="12" fill="#2a2316" stroke="#e0a458" stroke-width="1.6" filter="url(#sh)"/>
+  <text x="620" y="898" text-anchor="middle" font-size="15.5" font-weight="700" fill="#f0c07a">egress proxy</text>
+  <text x="620" y="921" text-anchor="middle" font-size="12.5" fill="#cf9a52">allowlist check &#8594; block or forward</text>
+  <text x="620" y="941" text-anchor="middle" font-size="11.5" fill="#b9863f">audit log &#183; outside agent VM</text>
+
+  <!-- ===== public internet ===== -->
+  <rect x="500" y="1028" width="240" height="52" rx="26" fill="#22262b" stroke="#333a42" stroke-width="1.2"/>
+  <text x="620" y="1059" text-anchor="middle" font-size="14" font-weight="600" fill="#9aa3a9">public internet</text>
+
+  <!-- ===== edge labels ===== -->
+  <g font-size="12" fill="#8b9398">
+    <g><rect x="564" y="205" width="112" height="24" rx="9" fill="#15181b" stroke="#333a42"/>
+       <text x="620" y="221" text-anchor="middle">read-only mount</text></g>
+    <g><rect x="552" y="348" width="136" height="24" rx="9" fill="#15181b" stroke="#333a42"/>
+       <text x="620" y="364" text-anchor="middle">clawx-isolated bridge</text></g>
+    <g><rect x="528" y="784" width="184" height="24" rx="9" fill="#15181b" stroke="#333a42"/>
+       <text x="620" y="800" text-anchor="middle">HTTP_PROXY / HTTPS_PROXY</text></g>
+    <g><rect x="532" y="986" width="176" height="24" rx="9" fill="#15181b" stroke="#333a42"/>
+       <text x="620" y="1002" text-anchor="middle">permitted destinations only</text></g>
+  </g>
+</svg>

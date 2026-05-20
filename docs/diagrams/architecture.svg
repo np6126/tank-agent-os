@@ -1,0 +1,94 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="904" viewBox="0 0 1200 904"
+     font-family="'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif">
+  <!-- tank-agent-os architecture. Hand-authored SVG; dark brand theme. Edit coordinates directly to maintain. -->
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#5a646c"/>
+    </marker>
+    <filter id="sh" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#000000" flood-opacity="0.55"/>
+    </filter>
+  </defs>
+
+  <rect width="1200" height="904" fill="#15181b"/>
+
+  <!-- ===== Agent VM container ===== -->
+  <rect x="48" y="120" width="1104" height="470" rx="18" fill="#1a1e22" stroke="#333a42" stroke-width="1.5"/>
+  <rect x="66" y="106" width="252" height="30" rx="9" fill="#22262b" stroke="#333a42" stroke-width="1"/>
+  <text x="192" y="126" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="12.5" font-weight="600" fill="#9aa3a9">Agent VM &#183; tank-agent-os</text>
+
+  <!-- ===== edges ===== -->
+  <g fill="none" stroke="#5a646c" stroke-width="2">
+    <path d="M600,74 L600,162" marker-end="url(#arr)"/>
+    <path d="M460,274 L216,378" marker-end="url(#arr)"/>
+    <path d="M530,274 L473,378" stroke-dasharray="6 5" marker-end="url(#arr)"/>
+    <path d="M660,274 L727,378" stroke-dasharray="6 5" marker-end="url(#arr)"/>
+    <path d="M730,274 L984,378" stroke-dasharray="6 5" marker-end="url(#arr)"/>
+    <path d="M213,498 L466,640" marker-end="url(#arr)"/>
+    <path d="M471,498 L545,640" marker-end="url(#arr)"/>
+    <path d="M729,498 L640,640" marker-end="url(#arr)"/>
+    <path d="M987,498 L728,640" marker-end="url(#arr)"/>
+    <path d="M390,238 L88,238 Q72,238 72,254 L72,678 Q72,694 88,694 L402,694" marker-end="url(#arr)"/>
+    <path d="M600,740 L600,778" marker-end="url(#arr)"/>
+  </g>
+
+  <!-- ===== Operator ===== -->
+  <rect x="525" y="28" width="150" height="46" rx="23" fill="#5db89c" filter="url(#sh)"/>
+  <text x="600" y="56" text-anchor="middle" font-size="14" font-weight="700" fill="#15181b">Operator</text>
+
+  <!-- ===== clawx container ===== -->
+  <rect x="390" y="170" width="420" height="104" rx="12" fill="#1a2a25" stroke="#5db89c" stroke-width="1.6" filter="url(#sh)"/>
+  <text x="600" y="203" text-anchor="middle" font-size="15.5" font-weight="700" fill="#e8eaed">clawx container</text>
+  <text x="600" y="226" text-anchor="middle" font-size="13" fill="#9fd8c6">claw-code OR opencode agent</text>
+  <text x="600" y="247" text-anchor="middle" font-size="12" fill="#5db89c">CLAUDE.md / AGENTS.md &#183; read-only</text>
+
+  <!-- ===== service-gator ===== -->
+  <rect x="105" y="386" width="216" height="112" rx="12" fill="#1a2a25" stroke="#5db89c" stroke-width="1.6" filter="url(#sh)"/>
+  <text x="213" y="434" text-anchor="middle" font-size="15" font-weight="700" fill="#e8eaed">service-gator</text>
+  <text x="213" y="458" text-anchor="middle" font-size="12.5" fill="#9fd8c6">scopes.json</text>
+
+  <!-- ===== mcp-searxng (opt-in) ===== -->
+  <rect x="363" y="386" width="216" height="112" rx="12" fill="#1a2329" stroke="#5b8b9c" stroke-width="1.6" stroke-dasharray="6 5" filter="url(#sh)"/>
+  <text x="471" y="426" text-anchor="middle" font-size="15" font-weight="700" fill="#d3dde1">mcp-searxng</text>
+  <text x="471" y="448" text-anchor="middle" font-size="12.5" fill="#93b8c4">+ searxng</text>
+  <text x="471" y="470" text-anchor="middle" font-size="11" fill="#7aa3b0">opt-in</text>
+
+  <!-- ===== docs-mcp (opt-in) ===== -->
+  <rect x="621" y="386" width="216" height="112" rx="12" fill="#1a2329" stroke="#5b8b9c" stroke-width="1.6" stroke-dasharray="6 5" filter="url(#sh)"/>
+  <text x="729" y="426" text-anchor="middle" font-size="15" font-weight="700" fill="#d3dde1">docs-mcp</text>
+  <text x="729" y="448" text-anchor="middle" font-size="12.5" fill="#93b8c4">scraper</text>
+  <text x="729" y="470" text-anchor="middle" font-size="11" fill="#7aa3b0">opt-in</text>
+
+  <!-- ===== llm-wiki (opt-in) ===== -->
+  <rect x="879" y="386" width="216" height="112" rx="12" fill="#1a2329" stroke="#5b8b9c" stroke-width="1.6" stroke-dasharray="6 5" filter="url(#sh)"/>
+  <text x="987" y="426" text-anchor="middle" font-size="15" font-weight="700" fill="#d3dde1">llm-wiki</text>
+  <text x="987" y="448" text-anchor="middle" font-size="12.5" fill="#93b8c4">git-backed wiki</text>
+  <text x="987" y="470" text-anchor="middle" font-size="11" fill="#7aa3b0">opt-in</text>
+
+  <!-- ===== Egress Proxy ===== -->
+  <rect x="410" y="648" width="380" height="92" rx="12" fill="#2a2316" stroke="#e0a458" stroke-width="1.6" filter="url(#sh)"/>
+  <text x="600" y="688" text-anchor="middle" font-size="15.5" font-weight="700" fill="#f0c07a">Egress Proxy</text>
+  <text x="600" y="711" text-anchor="middle" font-size="12.5" fill="#cf9a52">allowlist + audit</text>
+
+  <!-- ===== destinations ===== -->
+  <rect x="290" y="786" width="620" height="98" rx="12" fill="#1a1e22" stroke="#333a42" stroke-width="1.5"/>
+  <text x="600" y="816" text-anchor="middle" font-size="13" font-weight="600" fill="#9aa3a9">GitHub &#183; Search engines &#183; Doc sites</text>
+  <text x="600" y="838" text-anchor="middle" font-size="12" fill="#6b757d">DDG &#183; Wikipedia &#183; MDN &#183; docs.python &#183; &#8230;</text>
+  <text x="600" y="860" text-anchor="middle" font-size="13" fill="#9aa3a9">Local + Cloud providers</text>
+
+  <!-- ===== edge labels ===== -->
+  <g font-size="12" fill="#8b9398">
+    <g><rect x="578" y="106" width="44" height="24" rx="9" fill="#15181b" stroke="#333a42"/>
+       <text x="600" y="122" text-anchor="middle">SSH</text></g>
+    <g><rect x="313" y="314" width="48" height="24" rx="9" fill="#15181b" stroke="#333a42"/>
+       <text x="337" y="330" text-anchor="middle">MCP</text></g>
+    <g><rect x="447" y="314" width="108" height="24" rx="9" fill="#15181b" stroke="#333a42"/>
+       <text x="501" y="330" text-anchor="middle">MCP &#183; opt-in</text></g>
+    <g><rect x="639" y="314" width="108" height="24" rx="9" fill="#15181b" stroke="#333a42"/>
+       <text x="693" y="330" text-anchor="middle">MCP &#183; opt-in</text></g>
+    <g><rect x="803" y="314" width="108" height="24" rx="9" fill="#15181b" stroke="#333a42"/>
+       <text x="857" y="330" text-anchor="middle">MCP &#183; opt-in</text></g>
+    <g><rect x="522" y="612" width="156" height="24" rx="9" fill="#15181b" stroke="#333a42"/>
+       <text x="600" y="628" text-anchor="middle">nftables: proxy only</text></g>
+  </g>
+</svg>

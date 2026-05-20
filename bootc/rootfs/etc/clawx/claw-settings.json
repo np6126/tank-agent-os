@@ -1,0 +1,24 @@
+{
+  "mcpServers": {
+    "service-gator": {
+      "type": "stdio",
+      "command": "mcp-proxy",
+      "args": ["--transport", "streamablehttp", "http://service-gator:8080/mcp"]
+    },
+    "searxng": {
+      "type": "stdio",
+      "command": "mcp-proxy",
+      "args": ["--transport", "streamablehttp", "http://mcp-searxng:3000/mcp"]
+    },
+    "docs-mcp": {
+      "type": "stdio",
+      "command": "mcp-proxy",
+      "args": ["--transport", "streamablehttp", "http://docs-mcp:6280/mcp"]
+    },
+    "llm-wiki": {
+      "type": "stdio",
+      "command": "mcp-proxy",
+      "args": ["--transport", "streamablehttp", "http://llm-wiki:3100/mcp"]
+    }
+  }
+}

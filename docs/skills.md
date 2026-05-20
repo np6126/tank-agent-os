@@ -67,7 +67,10 @@ Drop the skill directory in `~/.clawx/skills/` and start a new agent
 session:
 
 ```bash
+# opencode build
 clawx run "use the hello-world skill"
+# claw build
+clawx prompt "use the hello-world skill"
 ```
 
 No `systemctl` restart is needed for the container. Each agent rescans

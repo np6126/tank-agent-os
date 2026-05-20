@@ -127,13 +127,14 @@ service-gator listens on the `clawx-isolated` bridge network. Inside the
 http://service-gator:8080
 ```
 
-For **`AGENT_KIND=opencode`** this MCP endpoint is wired automatically:
-`gen-opencode-config` writes a `mcp.service-gator` entry into the generated
-`/etc/clawx/opencode-config.json` so opencode discovers the tools on start.
-You don't need to do anything beyond creating the secrets.
+This MCP endpoint is wired automatically for both agent variants — you
+don't need to do anything beyond creating the secrets:
 
-For **`AGENT_KIND=claw`** the MCP URL must be configured in claw-code's own
-config (config format is claw-code-version-specific; check upstream docs).
+- **`opencode`** — `gen-opencode-config` writes a `mcp.service-gator`
+  entry into the generated `/etc/clawx/opencode-config.json`.
+- **`claw-code`** — the image ships `/etc/clawx/claw-settings.json`,
+  mounted read-only at `~/.claw/settings.json`, with `service-gator`
+  in its `mcpServers` block.
 
 ## 7. Configure The Egress Proxy (Optional)
 
@@ -229,6 +230,40 @@ image with `--build-arg AGENT_MEMORY_PERSIST=true`. See
 [memory.md](memory.md) for the threat-model trade-off and how to wipe
 memory if needed.
 
+## 11. LLM-Wiki (Optional)
+
+`llm-wiki` gives the agent a persistent, git-backed Markdown knowledge
+base. It is opt-in and **always** operator-enabled — never auto-started,
+even on `opencode` builds — because it needs git-host setup first.
+
+Outline: create one repo per wiki on your git host and a
+`wiki-bot-<vm-id>` service account, set `AGENT_LLM_WIKI_*` in
+`agent.env`, create the `llm_wiki_token` secret, add the git host to
+the egress-proxy allowlist, then:
+
+```bash
+tank-clawx-secrets
+systemctl --user start llm-wiki.service
+```
+
+The full procedure — repo layout, service-account permissions,
+capability tiers, and the skill drop-in — is in
+[llm-wiki.md](llm-wiki.md).
+
+## Verify
+
+Once the agent is configured and running, confirm the whole stack with
+the built-in self-test:
+
+```bash
+clawx doctor
+```
+
+It functionally checks containment (direct egress blocked, egress proxy
+reachable), the agent container and binary integrity, the read-only
+instruction file, and MCP connectivity. Each check prints `PASS`, `WARN`,
+or `FAIL`; the command exits non-zero if anything FAILs.
+
 ## Reference
 
 | What changed | What to run |
@@ -236,7 +271,8 @@ memory if needed.
 | Added or removed a secret | `tank-clawx-secrets` then restart the affected service |
 | Edited `~/.clawx/agent.env` | `systemctl --user restart clawx.service` |
 | Edited `~/.config/service-gator/scopes.json` | `systemctl --user restart service-gator.service` |
-| Edited `/etc/clawx/proxy.env` | `sudo systemctl restart clawx-nftables.service clawx-searxng-settings.service` |
+| Edited `/etc/clawx/proxy.env` | `sudo systemctl restart clawx-nftables.service` |
 | Installed a skill in `~/.clawx/skills/` | Start a new agent session — no service restart needed |
+| Edited `AGENT_LLM_WIKI_*` in `~/.clawx/agent.env` | `tank-clawx-secrets` then `systemctl --user restart llm-wiki.service` |
 | Want to wipe persistent agent memory | `rm -rf ~/.clawx/claude-projects/` (only present on `AGENT_MEMORY_PERSIST=true` builds) |
 | OS update available | `sudo bootc upgrade --apply` |

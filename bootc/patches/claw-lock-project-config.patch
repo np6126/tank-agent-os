@@ -1,0 +1,20 @@
+diff --git a/rust/crates/runtime/src/config.rs b/rust/crates/runtime/src/config.rs
+index b9a9e36..525d891 100644
+--- a/rust/crates/runtime/src/config.rs
++++ b/rust/crates/runtime/src/config.rs
+@@ -276,6 +276,15 @@ impl ConfigLoader {
+         let mut all_warnings = Vec::new();
+ 
+         for entry in self.discover() {
++            // tank-agent-os hardening: only User-scope config is trusted.
++            // The agent's cwd is the writable ~/workspaces mount, so a
++            // project- or local-scoped settings file there (a cloned repo,
++            // or a prompt-injected self-write) could otherwise inject or
++            // shadow MCP servers, hooks, plugins and permission rules past
++            // the baked, root-owned ~/.claw/settings.json.
++            if entry.source != ConfigSource::User {
++                continue;
++            }
+             crate::config_validate::check_unsupported_format(&entry.path)?;
+             let Some(parsed) = read_optional_json_object(&entry.path)? else {
+                 continue;

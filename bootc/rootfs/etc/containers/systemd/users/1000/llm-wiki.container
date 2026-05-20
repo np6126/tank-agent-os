@@ -1,0 +1,48 @@
+[Unit]
+Description=llm-wiki MCP server: git-backed Karpathy-style wikis for the agent
+After=network-online.target
+# First start clones the configured wiki repos from Gitea before the
+# server comes up. On a slow link that can exceed the default
+# StartLimitBurst window — widen it the same way searxng/docs-mcp do.
+StartLimitBurst=10
+StartLimitIntervalSec=300
+
+[Container]
+# Image= placeholder is rewritten at bootc-image-build to point at
+# ${MCP_LLM_WIKI_IMAGE}@${MCP_LLM_WIKI_REF}. See bootc/Containerfile.
+Image=localhost/mcp-llm-wiki:placeholder
+ContainerName=llm-wiki
+Pull=missing
+RunInit=true
+Network=clawx-isolated.network
+# Wiki working trees. A named podman volume — podman creates it with
+# ownership matching the in-container user, and it carries the llm-wiki
+# container's own SELinux label, so there is no host-perms or MCS
+# label-fight with the clawx container's ~/.clawx mount. Same pattern
+# as docs-mcp's docs-mcp-data volume. The trees are ephemeral anyway
+# (re-cloned from Gitea on container start); Gitea is the canonical
+# store. This Volume is on the llm-wiki container only — the clawx
+# container's two-writable-paths invariant is untouched.
+Volume=llm-wiki-data:/wikis
+# Token + operator config (AGENT_LLM_WIKI_URL/USER/TOKEN, the RW and
+# READONLY wiki lists) arrive as environment variables through a
+# sync-podman-secrets drop-in (llm-wiki.container.d/10-secrets.conf) —
+# the same secrets-as-env mechanism the other containers use. Nothing
+# wiki-specific is baked into the image.
+#
+# The image ENTRYPOINT (llm-wiki-init) clones missing wikis, installs
+# the merge-drivers per clone, then exec's the MCP server on
+# 0.0.0.0:3100/mcp — the path opencode connects to by container name
+# (http://llm-wiki:3100/mcp).
+
+[Service]
+TimeoutStartSec=300
+Restart=on-failure
+RestartSec=10s
+
+# No [Install] section by design. llm-wiki is always operator-enabled:
+# it requires Gitea service-account + API-token + wiki-repo setup
+# first (see docs/llm-wiki.md), so it must never auto-start — not even
+# for AGENT_KIND=opencode. Quadlet-generated units cannot be
+# `systemctl enable`d; the operator turns it on with:
+#   systemctl --user start llm-wiki.service

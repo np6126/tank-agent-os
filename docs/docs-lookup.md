@@ -3,7 +3,10 @@
 tank-agent-os ships an optional documentation-lookup MCP backed by
 [`arabold/docs-mcp-server`](https://github.com/arabold/docs-mcp-server)
 (v2.3.0). The opencode image auto-enables it; the claw image leaves the
-Quadlet disabled because claw-code does not auto-discover MCP endpoints.
+Quadlet disabled by default (the operator enables it if wanted). Both
+agents are wired to discover the MCP endpoint — opencode via
+`opencode-config.json`, claw-code via `claw-settings.json` — so on a
+claw build the docs tool appears as soon as the container is enabled.
 The agent stays sandboxed; only the docs-mcp container reaches upstream
 documentation hosts, and only through the same egress proxy as everything
 else.
@@ -19,11 +22,11 @@ Whether it auto-starts is controlled at image build:
 | `AGENT_KIND` | Quadlet state | Reason |
 |---|---|---|
 | `opencode` | `[Install] WantedBy=default.target` is appended → auto-enabled on first boot | opencode's MCP config wires `http://docs-mcp:6280/mcp`; the stack must be up for the tool to appear |
-| `claw` | no `[Install]` section → not enabled by default | claw-code doesn't auto-discover MCP endpoints; operator wires manually if desired |
+| `claw` | no `[Install]` section → not enabled by default | the claw image keeps the minimal default; the MCP endpoint is still wired (`claw-settings.json`), so enabling the container is all that is needed |
 
-Idle resource footprint is the heaviest of the three MCPs we ship — about
-600 MB image (Chromium dominates) and 250–400 MB RSS at rest. The index
-volume grows with the indexed corpus.
+Idle resource footprint is the heaviest of the opt-in MCPs we ship —
+about 600 MB image (Chromium dominates) and 250–400 MB RSS at rest. The
+index volume grows with the indexed corpus.
 
 ## Activation
 
@@ -90,7 +93,7 @@ any process on `clawx-isolated`.)
 | Agent | Docs-lookup behaviour after activation |
 |---|---|
 | `opencode` | `gen-opencode-config` wires `http://docs-mcp:6280/mcp` as an MCP endpoint automatically (`mcp.docs-mcp` block in `/etc/clawx/opencode-config.json`). When the container is up, search/scrape tools appear in opencode's tool registry. Indexing happens on demand — the first agent query for a new doc set triggers a scrape, subsequent queries hit the local DB. |
-| `claw-code` | The MCP endpoint is not auto-wired. Configure `http://docs-mcp:6280/mcp` as a claw-code MCP server in claw-code's own config (see upstream docs). |
+| `claw-code` | Auto-wired. The image ships `/etc/clawx/claw-settings.json` (mounted read-only at `~/.claw/settings.json`) with `docs-mcp` in its `mcpServers` block; claw-code discovers it on start. claw-code's MCP client is stdio-only and bridges this HTTP endpoint through `mcp-proxy` — while the container is disabled the endpoint is unreachable and `mcp-proxy` logs a harmless connection error (`Name or service not known`) on each run; enabling the container clears it. |
 
 The agent does not reach the doc hosts directly. The scraper that lives
 inside docs-mcp does, through the egress proxy, bound by the allowlist.

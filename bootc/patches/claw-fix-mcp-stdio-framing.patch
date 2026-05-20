@@ -1,0 +1,75 @@
+diff --git a/rust/crates/runtime/src/mcp_stdio.rs b/rust/crates/runtime/src/mcp_stdio.rs
+index b05ea44..6fdc04f 100644
+--- a/rust/crates/runtime/src/mcp_stdio.rs
++++ b/rust/crates/runtime/src/mcp_stdio.rs
+@@ -1227,43 +1227,33 @@ impl McpStdioProcess {
+     }
+ 
+     pub async fn write_frame(&mut self, payload: &[u8]) -> io::Result<()> {
+-        let encoded = encode_frame(payload);
+-        self.write_all(&encoded).await?;
++        // MCP stdio transport framing: one JSON-RPC message per line,
++        // newline-delimited (the MCP specification; NOT LSP-style
++        // Content-Length headers). serde_json emits compact JSON with
++        // no embedded newlines, so a trailing '\n' is a safe delimiter.
++        self.write_all(payload).await?;
++        self.write_all(b"\n").await?;
+         self.flush().await
+     }
+ 
+     pub async fn read_frame(&mut self) -> io::Result<Vec<u8>> {
+-        let mut content_length = None;
++        // MCP stdio transport framing: read one newline-delimited
++        // JSON-RPC message. Blank lines are skipped.
+         loop {
+             let mut line = String::new();
+             let bytes_read = self.stdout.read_line(&mut line).await?;
+             if bytes_read == 0 {
+                 return Err(io::Error::new(
+                     io::ErrorKind::UnexpectedEof,
+-                    "MCP stdio stream closed while reading headers",
++                    "MCP stdio stream closed while reading message",
+                 ));
+             }
+-            if line == "\r\n" {
+-                break;
+-            }
+-            let header = line.trim_end_matches(['\r', '\n']);
+-            if let Some((name, value)) = header.split_once(':') {
+-                if name.trim().eq_ignore_ascii_case("Content-Length") {
+-                    let parsed = value
+-                        .trim()
+-                        .parse::<usize>()
+-                        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+-                    content_length = Some(parsed);
+-                }
++            let trimmed = line.trim_end_matches(['\r', '\n']);
++            if trimmed.is_empty() {
++                continue;
+             }
++            return Ok(trimmed.as_bytes().to_vec());
+         }
+-
+-        let content_length = content_length.ok_or_else(|| {
+-            io::Error::new(io::ErrorKind::InvalidData, "missing Content-Length header")
+-        })?;
+-        let mut payload = vec![0_u8; content_length];
+-        self.stdout.read_exact(&mut payload).await?;
+-        Ok(payload)
+     }
+ 
+     pub async fn write_jsonrpc_message<T: Serialize>(&mut self, message: &T) -> io::Result<()> {
+@@ -1407,13 +1397,6 @@ fn apply_env(command: &mut Command, env: &BTreeMap<String, String>) {
+     }
+ }
+ 
+-fn encode_frame(payload: &[u8]) -> Vec<u8> {
+-    let header = format!("Content-Length: {}\r\n\r\n", payload.len());
+-    let mut framed = header.into_bytes();
+-    framed.extend_from_slice(payload);
+-    framed
+-}
+-
+ fn default_initialize_params() -> McpInitializeParams {
+     McpInitializeParams {
+         protocol_version: "2025-03-26".to_string(),

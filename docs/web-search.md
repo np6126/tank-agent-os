@@ -2,9 +2,12 @@
 
 tank-agent-os ships a self-hosted web-search stack. The opencode image
 auto-enables it so the agent gets a search tool out of the box; the claw
-image leaves the Quadlets disabled because claw-code does not auto-discover
-MCP endpoints. The agent stays sandboxed from the public internet; only the
-SearXNG container reaches upstream search engines, and only through the same
+image leaves the Quadlets disabled by default (the operator enables them
+if wanted). Both agents are wired to discover the MCP endpoint — opencode
+via `opencode-config.json`, claw-code via `claw-settings.json` — so on a
+claw build the search tool appears as soon as the stack is enabled. The
+agent stays sandboxed from the public internet; only the SearXNG
+container reaches upstream search engines, and only through the same
 egress proxy as the agent itself.
 
 ## What ships
@@ -19,7 +22,7 @@ Whether they auto-start is controlled at image build:
 | `AGENT_KIND` | Quadlet state | Reason |
 |---|---|---|
 | `opencode` | `[Install] WantedBy=default.target` is appended → auto-enabled on first boot | opencode's MCP config wires `http://mcp-searxng:3000/mcp`; the stack must be up for the tool to appear |
-| `claw` | no `[Install]` section → not enabled by default | claw-code doesn't auto-discover MCP endpoints; operator wires manually if desired |
+| `claw` | no `[Install]` section → not enabled by default | the claw image keeps the minimal default; the MCP endpoint is still wired (`claw-settings.json`), so enabling the stack is all that is needed |
 
 On an `opencode` build the two containers stay resident even when the
 agent never invokes web-search — roughly 150–250 MB combined RSS for
@@ -102,7 +105,7 @@ any process on `clawx-isolated`.)
 | Agent | Web-search behaviour after activation |
 |---|---|
 | `opencode` | `gen-opencode-config` wires `http://mcp-searxng:3000` as an MCP endpoint automatically (`mcp.searxng` block in `/etc/clawx/opencode-config.json`). When the containers are up, the search tool appears in opencode's tool registry. opencode's built-in `websearch` (Exa AI) stays inactive because its host is not in the allowlist; mcp-searxng is the working path. opencode's `webfetch` will only succeed for hosts already in the proxy allowlist. |
-| `claw-code` | The MCP endpoint is not auto-wired. Configure `http://mcp-searxng:3000` as a claw-code MCP server in claw-code's own config (see upstream docs). claw-code has its own built-in `webfetch` that goes through the egress proxy and is limited to allowlist hosts. |
+| `claw-code` | Auto-wired. The image ships `/etc/clawx/claw-settings.json` (mounted read-only at `~/.claw/settings.json`) with `searxng` in its `mcpServers` block; claw-code discovers it on start. claw-code's MCP client is stdio-only and bridges this HTTP endpoint through `mcp-proxy` — while the stack is disabled the endpoint is unreachable and `mcp-proxy` logs a harmless connection error (`Name or service not known`) on each run; enabling the stack clears it. claw-code also has its own built-in `webfetch` that goes through the egress proxy and is limited to allowlist hosts. |
 
 For indexed developer documentation (Python stdlib, Rust crates, Go
 packages, MDN by default), prefer the dedicated docs MCP — see

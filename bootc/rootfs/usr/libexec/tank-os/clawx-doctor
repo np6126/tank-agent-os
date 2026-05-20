@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+# clawx doctor — containment and functionality self-test for tank-agent-os.
+#
+# Verifies — with functional probes, not rule inspection — that the agent
+# VM's containment is actually in force and the runtime is healthy. Runs
+# as the clawx user and needs no privilege beyond what clawx already has.
+# Exit status is non-zero if any check FAILs, so it is scriptable/CI-usable.
+set -uo pipefail
+
+container_name="${CLAWX_CONTAINER:-clawx}"
+while (($# > 0)); do
+  case "$1" in
+    --container) container_name="${2:-}"; shift 2 ;;
+    --container=*) container_name="${1#--container=}"; shift ;;
+    *) shift ;;
+  esac
+done
+
+if [[ -t 1 ]]; then
+  C_OK=$'\033[32m'; C_WARN=$'\033[33m'; C_BAD=$'\033[31m'; C_OFF=$'\033[0m'
+else
+  C_OK=''; C_WARN=''; C_BAD=''; C_OFF=''
+fi
+
+pass=0; warn=0; fail=0
+ok()   { printf '  %sPASS%s  %s\n' "$C_OK"   "$C_OFF" "$1"; pass=$((pass + 1)); }
+wn()   { printf '  %sWARN%s  %s\n' "$C_WARN" "$C_OFF" "$1"; warn=$((warn + 1)); }
+bad()  { printf '  %sFAIL%s  %s\n' "$C_BAD"  "$C_OFF" "$1"; fail=$((fail + 1)); }
+note() { printf '        %s\n' "$1"; }
+
+cexec() { podman exec "$container_name" "$@"; }
+
+agent_kind="unknown"
+[[ -r /etc/clawx/agent.kind ]] && agent_kind=$(tr -d '[:space:]' < /etc/clawx/agent.kind)
+
+echo "clawx doctor — tank-agent-os containment self-test"
+echo "container: ${container_name}   agent: ${agent_kind}"
+echo
+
+# ── Runtime config ──────────────────────────────────────────────────
+cfg_base_url=""
+agent_env="$HOME/.clawx/agent.env"
+if [[ -f "$agent_env" ]]; then
+  # Source in a subshell so the operator's file cannot perturb our env.
+  mapfile -t cfg < <(
+    set -a
+    # shellcheck disable=SC1090
+    source "$agent_env" 2>/dev/null || true
+    set +a
+    printf '%s\n%s\n%s\n' "${AGENT_PROVIDER:-}" "${AGENT_BASE_URL:-}" "${AGENT_MODEL:-}"
+  )
+  cfg_base_url="${cfg[1]}"
+  if [[ -n "${cfg[0]}" && -n "${cfg[1]}" && -n "${cfg[2]}" ]]; then
+    ok "runtime config: AGENT_PROVIDER / BASE_URL / MODEL set in agent.env"
+  else
+    bad "runtime config: agent.env present but AGENT_PROVIDER/BASE_URL/MODEL incomplete"
+  fi
+else
+  wn "runtime config: ~/.clawx/agent.env not found (config may come from another source)"
+fi
+
+# ── clawx container ─────────────────────────────────────────────────
+if [[ "$(podman inspect --format '{{.State.Running}}' "$container_name" 2>/dev/null || true)" == "true" ]]; then
+  ok "clawx container '$container_name' is running"
+  container_up=1
+else
+  bad "clawx container '$container_name' is not running (try: systemctl --user start clawx.service)"
+  container_up=0
+fi
+
+# ── Agent binary integrity ──────────────────────────────────────────
+sha_file="/usr/local/share/tank-os/agent.sha256"
+if [[ -r "$sha_file" ]]; then
+  if sha256sum -c "$sha_file" >/dev/null 2>&1; then
+    ok "agent binary matches the build-recorded SHA-256"
+  else
+    bad "agent binary SHA-256 mismatch vs $sha_file — binary changed since build"
+  fi
+else
+  wn "agent binary: $sha_file not readable — cannot verify integrity"
+fi
+
+# ── nftables containment (functional probe) ─────────────────────────
+if ((container_up)); then
+  if cexec curl -sS -m 8 --noproxy '*' -o /dev/null http://1.1.1.1 2>/dev/null; then
+    bad "CONTAINMENT BREACH: direct (non-proxy) egress from the container succeeded"
+  else
+    ok "nftables: direct non-proxy egress from the container is blocked"
+  fi
+else
+  wn "nftables containment: skipped — clawx container is down"
+fi
+note "clawx-nftables.service: $(systemctl is-active clawx-nftables.service 2>/dev/null || echo unknown)"
+
+# ── Egress proxy ────────────────────────────────────────────────────
+if ((container_up)); then
+  proxy=$(cexec printenv HTTP_PROXY 2>/dev/null || true)
+  if [[ -z "$proxy" ]]; then
+    wn "egress proxy: no HTTP_PROXY in the container — proxy not configured?"
+  elif [[ -z "$cfg_base_url" ]]; then
+    wn "egress proxy: AGENT_BASE_URL unknown — cannot probe the model host"
+  else
+    code=$(cexec curl -s -m 12 -o /dev/null -w '%{http_code}' \
+             --proxy "$proxy" "${cfg_base_url%/}/models" 2>/dev/null || true)
+    if [[ "$code" =~ ^[234][0-9][0-9]$ ]]; then
+      ok "egress proxy reaches the allowlisted model host (HTTP $code)"
+    else
+      bad "egress proxy: model host not reachable (HTTP ${code:-none}) — proxy down or host not allowlisted"
+    fi
+  fi
+else
+  wn "egress proxy: skipped — clawx container is down"
+fi
+
+# ── Prompt-injection instruction file ───────────────────────────────
+if ((container_up)); then
+  if ! cexec sh -c 'test -f /home/clawx/CLAUDE.md && test -f /home/clawx/AGENTS.md' 2>/dev/null; then
+    bad "instruction file: CLAUDE.md / AGENTS.md missing from the container"
+  elif cexec test -w /home/clawx/CLAUDE.md 2>/dev/null; then
+    bad "instruction file: CLAUDE.md is WRITABLE — prompt-injection hardening broken"
+  else
+    ok "instruction file: CLAUDE.md + AGENTS.md present and read-only"
+  fi
+else
+  wn "instruction file: skipped — clawx container is down"
+fi
+
+# ── MCP servers ─────────────────────────────────────────────────────
+if ((container_up)); then
+  if mcp_out=$(timeout 30 podman exec "$container_name" /usr/local/bin/agent mcp list 2>&1); then
+    # Best-effort scan of the human-facing `mcp list` output for a failure
+    # marker — heuristic, hence WARN-only; 'clawx mcp list' is authoritative.
+    if grep -qiE 'fail|✗' <<<"$mcp_out"; then
+      wn "MCP: at least one configured server is not connected (see 'clawx mcp list')"
+    else
+      ok "MCP servers: 'agent mcp list' reports no failures"
+    fi
+  else
+    bad "MCP: 'agent mcp list' failed or timed out"
+  fi
+else
+  wn "MCP servers: skipped — clawx container is down"
+fi
+
+# ── Sidecar containers ──────────────────────────────────────────────
+running=$(podman ps --format '{{.Names}}' 2>/dev/null | tr '\n' ' ')
+if grep -qw service-gator <<<"$running"; then
+  ok "service-gator container is running"
+else
+  bad "service-gator container is not running"
+fi
+for c in searxng mcp-searxng docs-mcp llm-wiki; do
+  if grep -qw "$c" <<<"$running"; then
+    note "opt-in MCP up:   $c"
+  else
+    note "opt-in MCP down: $c"
+  fi
+done
+
+# ── Summary ─────────────────────────────────────────────────────────
+echo
+printf 'summary: %s%d pass%s, %s%d warn%s, %s%d fail%s\n' \
+  "$C_OK" "$pass" "$C_OFF" "$C_WARN" "$warn" "$C_OFF" "$C_BAD" "$fail" "$C_OFF"
+
+(( fail == 0 ))

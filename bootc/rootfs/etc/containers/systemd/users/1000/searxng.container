@@ -12,6 +12,14 @@ Image=docker.io/searxng/searxng:placeholder
 ContainerName=searxng
 Pull=missing
 RunInit=true
+# Pin SELinux MCS to the same fixed pair as clawx.container and
+# service-gator.container. searxng bind-mounts the shared
+# %h/.clawx/ca-bundle.crt (added by sync-podman-secrets as a :Z mount):
+# without an identical SecurityLabelLevel, searxng's :Z relabel steals
+# that file's MCS categories from the other two containers and locks them
+# out (EACCES, even for root inside the container). See clawx.container
+# for the full rationale.
+SecurityLabelLevel=s0:c200,c500
 # Settings file is root-owned in the bootc image and mounted ro; SearXNG
 # can read but not modify its own config.
 Volume=/etc/clawx/searxng-settings.yml:/etc/searxng/settings.yml:ro

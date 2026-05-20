@@ -34,7 +34,8 @@ clawx --version
 ```
 
 The `clawx` command on the host delegates to the running rootless container
-and executes `claw-code`. See [cli.md](cli.md).
+and executes the pinned agent binary (`claw-code` or `opencode`, depending
+on `AGENT_KIND`). See [cli.md](cli.md).
 
 ## Local macOS VM
 

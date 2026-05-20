@@ -36,6 +36,14 @@ Volume=%h/workspaces:/home/clawx/workspaces:Z
 # read the autoupdate-disabled config AND write its own plugin/agent files
 # next to it. The file itself stays root-owned ro; only siblings are writable.
 Volume=/etc/clawx/opencode-config.json:/home/clawx/.clawx/xdg-config/opencode/config.json:ro
+# claw-code MCP config. claw-code reads MCP servers from ~/.claw/settings.json
+# (user-scope in its config-resolution order); this static, root-owned file is
+# the claw-side equivalent of the mcp block in opencode-config.json. opencode
+# ignores it. claw-code's MCP client only supports the stdio transport, so the
+# entries spawn `mcp-proxy` (baked into clawx-runtime) to bridge stdio to each
+# HTTP MCP server on the bridge. Listing all four unconditionally is fine — a
+# server whose container is down fails the connection soft, like opencode.
+Volume=/etc/clawx/claw-settings.json:/home/clawx/.claw/settings.json:ro
 Network=clawx-isolated.network
 Environment=HOME=/home/clawx
 Environment=TERM=xterm-256color
@@ -48,6 +56,14 @@ Environment=XDG_CONFIG_HOME=/home/clawx/.clawx/xdg-config
 Environment=XDG_DATA_HOME=/home/clawx/.clawx/xdg-data
 Environment=XDG_CACHE_HOME=/home/clawx/.clawx/xdg-cache
 Environment=XDG_STATE_HOME=/home/clawx/.clawx/xdg-state
+# Lock opencode's MCP-server set (plus hooks/plugins) to the baked,
+# root-owned config. Without this, opencode merges project-scoped
+# opencode.json / .opencode/ discovered by walking up from the cwd — and
+# the cwd is the writable ~/workspaces mount, so a file there (a cloned
+# repo, or a prompt-injected self-write) could inject or shadow MCP
+# servers. claw-code ignores this var; its equivalent is the
+# claw-lock-project-config.patch applied at build.
+Environment=OPENCODE_DISABLE_PROJECT_CONFIG=1
 # Build-time opt-in for agent persistent memory. The literal __placeholder__
 # below is sed-substituted at bootc image build with the AGENT_MEMORY_PERSIST
 # ARG value (default "false"). When true, clawx-init symlinks the agent's

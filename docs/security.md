@@ -64,11 +64,11 @@ user session starts — installs nftables rules on the host OUTPUT chain:
 - **With proxy:** the proxy destination is added to the allow-set; all other
   outbound from the `clawx` UID is rejected.
 
-All four containers on this UID (clawx, service-gator, searxng, docs-mcp)
-are subject to the same rule. service-gator's outbound API calls
-(GitHub/GitLab/Forgejo/JIRA) now flow through the egress proxy alongside
-everything else — there is no longer a cgroup-based exemption, so the proxy
-log is the single, complete audit trail for the agent VM. The agent process
+Every container on this UID (clawx, service-gator, mcp-searxng, searxng,
+docs-mcp, llm-wiki) is subject to the same rule. service-gator's outbound
+API calls (GitHub/GitLab/Forgejo/JIRA) now flow through the egress proxy
+alongside everything else — there is no longer a cgroup-based exemption,
+so the proxy log is the single, complete audit trail for the agent VM. The agent process
 has no `CAP_NET_ADMIN` and cannot modify routing tables or firewall rules.
 The nftables table is owned by root and lives entirely outside the
 container's reach.
@@ -219,7 +219,7 @@ matching SHA-256 ARG. There is no runtime pull of the agent binary.
 
 | `AGENT_KIND` | Pinned input            | Verified output                       |
 |--------------|-------------------------|---------------------------------------|
-| `claw`       | Git commit + 3 patches  | SHA-256 of locally built binary       |
+| `claw`       | Git commit + 5 patches  | SHA-256 of locally built binary       |
 | `opencode`   | Release tag + asset name| SHA-256 of upstream tarball + binary  |
 
 For `AGENT_KIND=opencode` there is one further input to pin:
@@ -278,10 +278,10 @@ Audits exist today for:
 - [`audits/service-gator-2026-05-19.md`](../audits/service-gator-2026-05-19.md)
 - [`audits/mcp-searxng-2026-05-19.md`](../audits/mcp-searxng-2026-05-19.md)
 - [`audits/docs-mcp-server-2026-05-19.md`](../audits/docs-mcp-server-2026-05-19.md) (accept with mitigation: `DOCS_MCP_TELEMETRY=false` pinned in the Quadlet env)
+- [`audits/llm-wiki-server-2026-05-20.md`](../audits/llm-wiki-server-2026-05-20.md) (accept: first-party server, security-hardened by design)
 
 A PR that adds a new MCP must include a matching `audits/<name>-<date>.md`
-file. See [TODO_oss_release.md](../TODO_oss_release.md) for the OSS-process
-mirror of this gate.
+file.
 
 #### Sigstore verification — queued behind upstream
 
@@ -305,7 +305,7 @@ writing. The verification step is therefore queued behind upstream
 enabling signing.
 When either upstream begins publishing signatures, a CI step using
 `thv verify` (stacklok/toolhive) or `cosign verify` with the matching
-identity/issuer regex gets added to `.gitea/workflows/build.yml` ahead
+identity/issuer regex gets added to `.github/workflows/build.yml` ahead
 of the `clawx-runtime` build, fail-closed on mismatch.
 
 Until then, the supply-chain controls in place are:
@@ -384,6 +384,8 @@ boundary.
 | Auto-update itself (opencode `autoupdate`) | No — update host not in proxy allowlist; config also pins `autoupdate: false` |
 | Reach external search engines directly | No — even with the opt-in SearXNG stack enabled, the agent talks to `mcp-searxng` on the bridge; only SearXNG itself has egress, and only through the same proxy/allowlist as the agent |
 | Reach external documentation hosts directly | No — even with the opt-in docs-mcp stack enabled, the agent talks to `docs-mcp` on the bridge; only docs-mcp's scraper has egress, and only through the same proxy/allowlist as the agent |
+| Use the llm-wiki knowledge base | Yes — opt-in, always operator-enabled; the agent talks to `llm-wiki` on the bridge. Only the `llm-wiki` container has egress, to the git host only, through the same proxy/allowlist as the agent. Wiki page content is treated as data, not instructions (see `CLAUDE.md`); the server strips known injection patterns on write. See [docs/llm-wiki.md](../docs/llm-wiki.md). |
+| Add or override MCP servers via workspace config | No — both agents load only their baked, root-owned MCP config. opencode's project-config discovery is disabled (`OPENCODE_DISABLE_PROJECT_CONFIG=1`); claw-code is patched to honour only User-scope config (`claw-lock-project-config.patch`). Without this, a settings file (`opencode.json` / `.claw/settings.json`) in the writable `~/workspaces` mount — a cloned repo, or a prompt-injected self-write — could inject a new MCP server or shadow a trusted one such as `service-gator`. The blast radius would still be bounded by the proxy / nftables / `scopes.json` controls, but the baked config is the trust anchor for the MCP set. |
 | Modify Quadlet drop-in files | No — those directories are not mounted into the container |
 | Write to its own config (`~/.clawx/`) | Yes — required for agent runtime state; opencode's XDG paths are redirected here via `XDG_*_HOME` env vars so the agent stays inside this single writable mount |
 | Write to the workspace (`~/workspaces/`) | Yes — this is the intended working area |
@@ -394,10 +396,10 @@ boundary.
 ## Isolation Without the Proxy
 
 `clawx-nftables.service` installs a deny-all rule for the `clawx` UID
-regardless of whether a proxy is configured. All four user-1000 containers
-(clawx, service-gator, searxng, docs-mcp) sit on the `clawx-isolated`
-bridge network; the nftables rules on the host OUTPUT chain are what
-constrains every one of them to the proxy.
+regardless of whether a proxy is configured. All user-1000 containers
+(clawx, service-gator, mcp-searxng, searxng, docs-mcp, llm-wiki) sit on
+the `clawx-isolated` bridge network; the nftables rules on the host
+OUTPUT chain are what constrains every one of them to the proxy.
 
 With a proxy configured, `clawx-nftables.service` adds the proxy destination
 to the allow-set so traffic from any of those containers can reach the
@@ -409,51 +411,7 @@ the agent's.
 
 ## Trust Boundaries
 
-```
-┌─────────────────── agent VM ───────────────────────────────────┐
-│                                                                │
-│  /etc/clawx/CLAUDE.md (root-owned, ro)                         │
-│    └── mounted into clawx container at ~/CLAUDE.md AND         │
-│        ~/AGENTS.md (claw reads first, opencode reads second)   │
-│                                                                │
-│  /etc/clawx/opencode-config.json (root-owned, ro,              │
-│    regenerated from agent.env by clawx-opencode-config.service)│
-│                                                                │
-│  clawx container (no CAP_NET_ADMIN, no sudo)                   │
-│    │ clawx-isolated bridge                                     │
-│    ├────────────────► service-gator container                  │
-│    │                    │ scopes.json allowlist                │
-│    │                    │ host routing (nftables: proxy only)  │
-│    │                    │ ── routes GitHub/GitLab/JIRA calls   │
-│    │                    │    through the proxy alongside the   │
-│    │                    │    agent, single audit trail         │
-│    │                    │                                      │
-│    ├────────────────► mcp-searxng (opt-in, disabled by default)│
-│    │                    │                                      │
-│    │                    ▼                                      │
-│    │                  searxng container (opt-in)               │
-│    │                    │ host routing (nftables: proxy only,  │
-│    │                    │ same trust class as clawx)           │
-│    │                    │                                      │
-│    ├────────────────► docs-mcp (opt-in, disabled by default)   │
-│    │                    │ scraper + index DB in one container  │
-│    │                    │ host routing (nftables: proxy only,  │
-│    │                    │ same trust class as clawx)           │
-│    │                    │                                      │
-│    │ host routing (nftables: proxy only)                       │
-│    ▼  ◄─── same proxy ───┘                                     │
-└────────────────────────────────────────────────────────────────┘
-         │ HTTP_PROXY / HTTPS_PROXY
-         ▼
-┌──── proxy host (separate trust boundary) ──────────┐
-│  egress proxy                                      │
-│    allowlist check → block or forward              │
-│    audit log (outside agent VM)                    │
-└────────────────────────────────────────────────────┘
-         │ permitted destinations only
-         ▼
-       public internet
-```
+![Trust boundaries: the agent VM (config, clawx container, service-gator, opt-in MCP servers, host nftables OUTPUT chain) and the separate proxy-host trust boundary, with all egress forced through the proxy to the public internet](diagrams/trust-boundaries.svg)
 
 The proxy host is the boundary between the agent's network namespace and the
 public internet. It should be treated as infrastructure: access to it should be

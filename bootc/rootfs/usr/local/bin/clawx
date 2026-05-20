@@ -67,6 +67,13 @@ if [[ "$(id -un)" != "clawx" ]]; then
   exec sudo -iu clawx -- /usr/local/bin/clawx --container "$container_name" "${args[@]}"
 fi
 
+# `clawx doctor` runs the containment self-test. Intercept it before the
+# container-running check below — diagnosing a stopped container is one
+# of the things doctor is for.
+if [[ "${args[0]:-}" == "doctor" ]]; then
+  exec /usr/libexec/tank-os/clawx-doctor --container "$container_name"
+fi
+
 if ! podman inspect --format '{{.State.Running}}' "$container_name" 2>/dev/null | grep -qx true; then
   echo "agent container '$container_name' is not running." >&2
   echo "Try: systemctl --user start clawx.service" >&2
