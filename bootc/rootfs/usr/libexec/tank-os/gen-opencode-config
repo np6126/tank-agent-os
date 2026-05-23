@@ -1,133 +1,159 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/usr/bin/python3
+"""Regenerate /etc/clawx/opencode-config.json from the operator's agent.env.
 
-# Regenerates /etc/clawx/opencode-config.json from the operator's agent.env.
-# Runs as root either at boot (via clawx-opencode-config.service) or whenever
-# agent.env changes (via clawx-opencode-config.path). The config file stays
-# root-owned and is mounted ro into the clawx container — opencode cannot
-# rewrite it from inside the sandbox.
+Runs as root either at boot (clawx-opencode-config.service) or whenever
+agent.env changes (clawx-opencode-config.path). The config file stays
+root-owned and is mounted read-only into the clawx container — opencode
+cannot rewrite it from inside the sandbox.
 
-agent_env=/var/home/clawx/.clawx/agent.env
-target=/etc/clawx/opencode-config.json
-tmp="${target}.tmp"
+Python rather than shell for one reason: the config is JSON, and json.dumps
+escapes every value structurally. The previous shell version built the file
+with heredocs and a hand-rolled `"` -> `\\"` substitution, which is a latent
+quoting bug. The build helpers here are pure and importable, so
+tools/test-gen-opencode-config.py unit-tests them VM-free; main() is the
+side-effecting entry point, guarded by __main__.
+"""
+import json
+import os
+import subprocess
+import sys
+
+AGENT_ENV = "/var/home/clawx/.clawx/agent.env"
+TARGET = "/etc/clawx/opencode-config.json"
 
 # MCP endpoints baked into every config: all reside on the clawx-isolated
 # bridge and are reachable from inside the clawx container by container name.
-# - service-gator is always running (WantedBy=default.target).
-# - mcp-searxng and docs-mcp are opt-in (no [Install] for AGENT_KIND=claw,
-#   auto-enabled for AGENT_KIND=opencode at image build); when their
-#   service is not enabled opencode fails the connection soft and the tool
-#   simply doesn't appear.
-# - llm-wiki is opt-in and always operator-enabled (never auto-started —
-#   it needs Gitea setup first). Listed here unconditionally for the same
-#   reason: if llm-wiki.service is not enabled the container name does not
-#   resolve on the bridge and opencode fails the connection soft.
-mcp_block='
-  "mcp": {
-    "service-gator": {
-      "type": "remote",
-      "url": "http://service-gator:8080/mcp",
-      "enabled": true
-    },
-    "searxng": {
-      "type": "remote",
-      "url": "http://mcp-searxng:3000/mcp",
-      "enabled": true
-    },
-    "docs-mcp": {
-      "type": "remote",
-      "url": "http://docs-mcp:6280/mcp",
-      "enabled": true
-    },
-    "llm-wiki": {
-      "type": "remote",
-      "url": "http://llm-wiki:3100/mcp",
-      "enabled": true
-    }
-  }'
+# service-gator is always running; searxng/docs-mcp/llm-wiki are opt-in and
+# opencode fails their connection soft when the service is not enabled.
+MCP = {
+    "service-gator": {"type": "remote", "url": "http://service-gator:8080/mcp", "enabled": True},
+    "searxng":       {"type": "remote", "url": "http://mcp-searxng:3000/mcp", "enabled": True},
+    "docs-mcp":      {"type": "remote", "url": "http://docs-mcp:6280/mcp", "enabled": True},
+    "llm-wiki":      {"type": "remote", "url": "http://llm-wiki:3100/mcp", "enabled": True},
+}
 
 # opencode's external_directory permission defaults to "ask" — in non-
-# interactive flows (`clawx mcp list`, agent tool calls) "ask" auto-rejects
-# and the call fails. Tank-claw-os' container sandbox is the primary
-# defense (only ~/.clawx and ~/workspaces are writable mounts), so we set
-# this permission to "allow" and let the OS layer enforce isolation.
-permission_block='
-  "permission": {
-    "external_directory": "allow"
-  },'
+# interactive flows ("clawx mcp list", agent tool calls) "ask" auto-rejects.
+# The container sandbox is the real boundary (only ~/.clawx and ~/workspaces
+# are writable mounts), so set this to "allow" and let the OS layer enforce.
+PERMISSION = {"external_directory": "allow"}
 
-write_minimal() {
-  cat > "$tmp" <<EOF
-{
-  "\$schema": "https://opencode.ai/config.json",
-  "autoupdate": false,${permission_block}${mcp_block}
-}
-EOF
-}
 
-write_openai_compat() {
-  local base_url="${AGENT_BASE_URL//\"/\\\"}"
-  # Strip the claw-specific `local/` model-name prefix so agent.env stays
-  # agent-agnostic. claw-code does the equivalent in wire_model_for_base_url().
-  local model="${AGENT_MODEL#local/}"
-  model="${model//\"/\\\"}"
-  cat > "$tmp" <<EOF
-{
-  "\$schema": "https://opencode.ai/config.json",
-  "autoupdate": false,${permission_block}
-  "provider": {
-    "agent": {
-      "npm": "@ai-sdk/openai-compatible",
-      "options": { "baseURL": "${base_url}" },
-      "models": { "${model}": {} }
+def provider_family(provider):
+    """Map AGENT_PROVIDER to its API family.
+
+    Duplicated — by necessity — in sync-podman-secrets (bash). The two copies
+    must never disagree; tools/test-gen-opencode-config.py asserts that.
+    """
+    if provider in ("ollama", "lmstudio", "openrouter", "openai",
+                    "custom-openai-compatible"):
+        return "openai"
+    if provider in ("anthropic", "custom-anthropic-compatible"):
+        return "anthropic"
+    return "unknown"
+
+
+def build_config(provider, base_url, model):
+    """Return the opencode config as a dict.
+
+    openai-family providers with a base URL and a model get a custom-provider
+    entry; everything else (no agent.env yet, or anthropic-family — opencode
+    uses its built-in anthropic provider plus ANTHROPIC_* env vars) gets the
+    minimal config.
+    """
+    config = {
+        "$schema": "https://opencode.ai/config.json",
+        "autoupdate": False,
+        "permission": PERMISSION,
     }
-  },${mcp_block}
-}
-EOF
-}
+    if base_url and model and provider_family(provider) == "openai":
+        # Strip the claw-specific `local/` model-name prefix so agent.env
+        # stays agent-agnostic (claw-code does the equivalent in
+        # wire_model_for_base_url). The provider id is hard-coded to `agent`
+        # to avoid collisions with opencode's built-in provider registry.
+        if model.startswith("local/"):
+            model = model[len("local/"):]
+        config["provider"] = {
+            "agent": {
+                "npm": "@ai-sdk/openai-compatible",
+                "options": {"baseURL": base_url},
+                "models": {model: {}},
+            }
+        }
+    config["mcp"] = MCP
+    return config
 
-provider_family() {
-  case "${AGENT_PROVIDER:-}" in
-    ollama|lmstudio|openrouter|openai|custom-openai-compatible) printf 'openai' ;;
-    anthropic|custom-anthropic-compatible) printf 'anthropic' ;;
-    *) printf 'unknown' ;;
-  esac
-}
 
-if [ -r "$agent_env" ]; then
-  set -a
-  # shellcheck disable=SC1090
-  . "$agent_env"
-  set +a
-fi
+def render(config):
+    """Serialise the config dict to the exact file content (trailing \\n)."""
+    return json.dumps(config, indent=2) + "\n"
 
-if [ -n "${AGENT_BASE_URL:-}" ] && [ -n "${AGENT_MODEL:-}" ] && \
-   [ "$(provider_family)" = "openai" ]; then
-  write_openai_compat
-else
-  # No agent.env yet, or anthropic-family (opencode uses built-in anthropic
-  # provider plus ANTHROPIC_* env vars from tank-clawx-secrets).
-  write_minimal
-fi
 
-chmod 0644 "$tmp"
+def read_agent_env(path):
+    """Return (AGENT_PROVIDER, AGENT_BASE_URL, AGENT_MODEL) from agent.env.
 
-# Idempotency guard: if the regenerated content is byte-identical to what
-# is already in place, drop the temp file and skip the restart. Without
-# this, every boot (via clawx-opencode-config.service) and every unrelated
-# touch of agent.env (via .path) would bounce the clawx container.
-if [ -f "$target" ] && cmp -s "$tmp" "$target"; then
-  rm -f "$tmp"
-  exit 0
-fi
-mv "$tmp" "$target"
+    agent.env is a shell-sourceable env file; every other consumer
+    (sync-podman-secrets, the clawx wrapper, clawx-selftest) `source`s it. To
+    keep that contract identical we source it in a throwaway bash subshell
+    rather than re-implementing shell parsing in Python.
+    """
+    if not os.access(path, os.R_OK):
+        return ("", "", "")
+    quoted = path.replace('"', '\\"')
+    script = (
+        'set -a; . "' + quoted + '" 2>/dev/null || true; '
+        r'printf "%s\n%s\n%s\n" '
+        '"${AGENT_PROVIDER:-}" "${AGENT_BASE_URL:-}" "${AGENT_MODEL:-}"'
+    )
+    out = subprocess.run(["bash", "-c", script],
+                         capture_output=True, text=True).stdout
+    lines = (out.split("\n") + ["", "", ""])[:3]
+    return (lines[0], lines[1], lines[2])
 
-# Skip restart if clawx user session is not up yet (first boot, before
-# user@1000.service has started). The clawx.service will pick up the fresh
-# config when it starts normally.
-if ! loginctl show-user clawx 2>/dev/null | grep -q '^State=active'; then
-  exit 0
-fi
 
-runuser -u clawx -- env XDG_RUNTIME_DIR=/run/user/1000 \
-  systemctl --user restart clawx.service 2>/dev/null || true
+def main():
+    content = render(build_config(*read_agent_env(AGENT_ENV)))
+
+    # --print: emit the config to stdout and do nothing else. The bootc build
+    # uses this to bake /etc/clawx/opencode-config.json from this generator,
+    # so the shipped file cannot drift from what the boot-time run produces.
+    if "--print" in sys.argv[1:]:
+        sys.stdout.write(content)
+        return 0
+
+    # Idempotency guard: if the regenerated content is byte-identical to what
+    # is already in place, do not rewrite and do not restart. Without this,
+    # every boot and every unrelated touch of agent.env would bounce the
+    # clawx container.
+    try:
+        with open(TARGET, encoding="utf-8") as f:
+            if f.read() == content:
+                return 0
+    except FileNotFoundError:
+        pass
+
+    tmp = TARGET + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(content)
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, TARGET)
+
+    # Skip the restart if the clawx user session is not up yet (first boot,
+    # before user@1000.service). clawx.service picks up the fresh config when
+    # it starts normally.
+    show = subprocess.run(["loginctl", "show-user", "clawx"],
+                          capture_output=True, text=True)
+    if "State=active" not in show.stdout.splitlines():
+        return 0
+
+    subprocess.run(
+        ["runuser", "-u", "clawx", "--",
+         "env", "XDG_RUNTIME_DIR=/run/user/1000",
+         "systemctl", "--user", "restart", "clawx.service"],
+        check=False,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

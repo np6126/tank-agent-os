@@ -5,7 +5,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/license-MIT-5db89c" alt="License: MIT">
   <img src="https://img.shields.io/badge/built%20with-bootc-444" alt="Built with bootc">
-  <img src="https://img.shields.io/badge/agents-opencode%20%C2%B7%20claw--code-444" alt="Agents: opencode and claw-code">
+  <img src="https://img.shields.io/badge/agents-opencode%20%C2%B7%20claw--code%20%C2%B7%20claude-444" alt="Agents: opencode, claw-code and claude">
 </p>
 
 Run an autonomous AI coding agent under controls it cannot disable. An autonomous agent decides
@@ -15,10 +15,10 @@ egress proxy, OS-level nftables confine the agent's UID, and a root-owned instru
 hardens against prompt injection — all enforced by the OS, not by the agent's cooperation.
 
 **tank-agent-os** is a Fedora [bootc](https://bootc-dev.github.io/bootc/) image that ships one
-autonomous coding agent — **opencode** or **claw-code** — inside a hardened, rootless-Podman
-appliance. bootc turns a container image into a bootable, updateable Linux OS; exactly one agent
-runtime ships per image, chosen at build time via `AGENT_KIND` — no runtime switching, no
-runtime updates. Run the agent in a tank — audited, bounded, observable.
+autonomous coding agent — **opencode**, **claw-code**, or **Claude Code** — inside a hardened,
+rootless-Podman appliance. bootc turns a container image into a bootable, updateable Linux OS;
+exactly one agent runtime ships per image, chosen at build time via `AGENT_KIND` — no runtime
+switching, no runtime updates. Run the agent in a tank — audited, bounded, observable.
 
 ## Architecture
 
@@ -28,7 +28,7 @@ runtime updates. Run the agent in a tank — audited, bounded, observable.
 
 | Feature | What it does | Docs |
 |---|---|---|
-| Two pinned agent runtimes | opencode (default) or claw-code — one per image, no runtime switching or updates | [build.md](docs/build.md) |
+| Three pinned agent runtimes | opencode (default), claw-code, or Claude Code — one per image, no runtime switching or updates | [build.md](docs/build.md) |
 | Audited egress proxy | every outbound packet forced through an allowlisted, logged proxy on a separate host | [security.md](docs/security.md) |
 | OS-level network lockdown | nftables confine the agent UID to the proxy; a deny-all baseline applies even with no proxy configured | [security.md](docs/security.md) |
 | Prompt-injection hardening | a root-owned, read-only instruction file sets a data-not-commands trust hierarchy | [security.md](docs/security.md) |
@@ -69,6 +69,10 @@ AGENT_BASE_URL=http://ollama.example.internal:11434/v1
 AGENT_MODEL=replace-with-ollama-model
 ```
 
+Supported providers: `ollama`, `lmstudio`, `openrouter`, `openai`, `anthropic`,
+`custom-openai-compatible`, `custom-anthropic-compatible` — see
+[model-providers.md](docs/model-providers.md) for setup and secret names.
+
 ## Get started
 
 1. [Build the image](docs/build.md)
@@ -87,6 +91,7 @@ For bootc concepts and day-2 operations, see the upstream [bootc documentation](
 - **[LobsterTrap/tank-os](https://github.com/LobsterTrap/tank-os)** — the appliance architecture this repo forks: Fedora bootc, rootless Podman Quadlets, cloud-init provisioning, service-gator integration, the rootless secrets model.
 - **[anomalyco/opencode](https://github.com/anomalyco/opencode)** — the default agent runtime, downloaded from upstream releases at build time and pinned by tarball SHA-256.
 - **[ultraworkers/claw-code](https://github.com/ultraworkers/claw-code)** — the experimental second runtime, compiled from a pinned commit with local patches, output binary SHA-256-pinned.
+- **[Claude Code](https://www.anthropic.com/claude-code)** — Anthropic's upstream agent, the third runtime; the native binary is downloaded from `downloads.claude.ai` at build time, its signed release manifest GPG-verified and the binary SHA-256-pinned.
 
 ## License
 

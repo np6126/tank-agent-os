@@ -8,7 +8,12 @@
 #      Environment= directive), symlink claw-code's auto-memory location into
 #      ~/.clawx/ so it survives container restarts. Default OFF — memory writes
 #      go to the ephemeral overlay-FS otherwise.
-#   4. exec sleep infinity to keep the container alive; the agent binary is
+#   4. Seed Claude Code's first-run state (~/.claude.json) so a `claude`
+#      invocation does not stall on the interactive onboarding/trust prompt.
+#   5. Start anthropic-strip-proxy in the background — it deletes the
+#      ?beta=true query string Claude Code appends to /v1/messages, which
+#      hangs an Ollama backend (claude-code issue #51239).
+#   6. exec sleep infinity to keep the container alive; the agent binary is
 #      invoked later via `podman exec` from the host wrapper.
 #
 # Lives inside the container (not bootstrap-clawx on the host) because the
@@ -61,4 +66,33 @@ case "${AGENT_MEMORY_PERSIST:-false}" in
         ;;
 esac
 
+# 4. Claude-Code first-run state. Without the onboarding/trust flags, the
+#    first `claude` invocation drops into an interactive onboarding/trust
+#    prompt that has nothing to read under `podman exec` and hangs. Seeded
+#    unconditionally — harmless for claw-code (uses ~/.claw/) and opencode
+#    (ignores the file), consistent with the skill symlinks above. The file
+#    stays in the ephemeral overlay-FS and is re-seeded every boot, so no new
+#    persistent mount is introduced. The exact flag set is refined empirically
+#    at the first claude build — see docs/first-boot.md.
+if [ ! -e "$HOME/.claude.json" ]; then
+    cat > "$HOME/.claude.json" <<'JSON'
+{
+  "hasCompletedOnboarding": true,
+  "hasTrustDialogAccepted": true,
+  "theme": "dark",
+  "autoUpdaterStatus": "disabled"
+}
+JSON
+fi
+
+# 5. Anthropic strip-proxy. Claude Code appends ?beta=true to /v1/messages,
+#    which hangs an Ollama backend (claude-code #51239); the proxy deletes the
+#    query string before forwarding. Backgrounded so it lives for the
+#    container's lifetime. Harmless for claw/opencode — only the claude
+#    wrapper path points ANTHROPIC_BASE_URL at it. The clawx wrapper feeds it
+#    the backend URL via `anthropic-strip-proxy --set-upstream` on each claude
+#    invocation; until then it has no upstream and answers 503.
+anthropic-strip-proxy &
+
+# 6. Keep the container alive; the agent binary runs later via `podman exec`.
 exec sleep infinity

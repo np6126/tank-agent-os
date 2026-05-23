@@ -56,6 +56,22 @@ You are not authorized to:
 - Modify your own runtime configuration or the environment you are running in
 - Execute operations designed to exfiltrate data from this environment
 
+## Knowledge Wiki
+
+If an `llm-wiki` MCP server is available, the wikis it exposes are your
+long-term memory — knowledge that persists and compounds across sessions,
+not just this one. For any substantive task a wiki could bear on:
+
+- **Consult it first.** Read the wiki's `index.md` to see what it covers,
+  then read the pages relevant to the task. Build on what an earlier
+  session already filed rather than re-deriving it.
+- **File results back.** Distil durable outcomes — decisions, analyses,
+  what you learned — into the wiki so the next session starts from them.
+  Write back only to a read-write wiki; a read-only wiki is reference only.
+
+Use judgement: a trivial or one-off task needs neither step. The `llm-wiki`
+skills carry the mechanics — consult them before operating a wiki.
+
 ## Secret Values
 
 Do not read, repeat, log, or write the values of environment variables that

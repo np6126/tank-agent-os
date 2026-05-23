@@ -1,8 +1,9 @@
 # Agent Memory Persistence
 
-Some agents (notably `claw-code` via Claude Code's auto-memory) write
-their own notes across sessions. By default in tank-agent-os these writes
-go to the container's ephemeral overlay filesystem and are lost on every
+Some agents write their own notes across sessions — `claw-code` and
+upstream `claude` (Claude Code) both keep state under the
+`~/.claude/projects/` tree. By default in tank-agent-os these writes go to
+the container's ephemeral overlay filesystem and are lost on every
 container recreate — there is no agent-written state that survives.
 
 This is on purpose. Persistent memory is a real prompt-injection-
@@ -25,12 +26,13 @@ podman build \
   bootc
 ```
 
-When enabled, `clawx-init` symlinks claw-code's memory directory into
-the existing writable mount at `~/.clawx/`:
+When enabled, `clawx-init` symlinks the `~/.claude/projects/` directory —
+used by both claw-code and Claude Code — into the existing writable mount
+at `~/.clawx/`:
 
 | Agent | Memory location (in container) | How it persists |
 |---|---|---|
-| `claw-code` | `~/.claude/projects/<workspace-hash>/memory/` | `clawx-init` symlinks `~/.claude/projects` → `~/.clawx/claude-projects/` |
+| `claw-code`, `claude` | `~/.claude/projects/<workspace-hash>/` — claw-code auto-memory notes; Claude Code session transcripts and task lists | `clawx-init` symlinks `~/.claude/projects` → `~/.clawx/claude-projects/` |
 | `opencode` | somewhere under `$XDG_DATA_HOME` (exact subdirectory depends on opencode version) | `XDG_DATA_HOME` is already redirected to `~/.clawx/xdg-data/` by `clawx.container`, so any opencode memory writes under XDG land in the host mount automatically — no additional symlink |
 
 The two-writable-paths invariant (`~/.clawx/` + `~/workspaces/` only)
@@ -38,9 +40,10 @@ stays intact — memory lives inside `~/.clawx/`, the existing agent-
 state mount.
 
 Note that the opencode side is XDG-redirection-based, not symlink-based,
-so the flag mostly matters for claw-code today. The flag still gates
-the claw-code-specific symlink even on opencode builds, so flipping it
-off keeps the agent's overlay-FS-only behaviour for both.
+so the flag mostly matters for the `~/.claude/`-based agents (claw-code
+and Claude Code). The flag still gates the `~/.claude/projects` symlink
+even on opencode builds, so flipping it off keeps the agent's
+overlay-FS-only behaviour for all three.
 
 ## What `CLAUDE.md` says about memory
 
@@ -95,7 +98,8 @@ What's NOT defended against:
 Persistent memory lives entirely under `~/.clawx/`. Wipe at any time:
 
 ```bash
-# claw-code auto-memory (always at this path when AGENT_MEMORY_PERSIST=true)
+# claw-code auto-memory and Claude Code transcripts
+# (always at this path when AGENT_MEMORY_PERSIST=true)
 rm -rf ~/.clawx/claude-projects/
 
 # opencode — the memory store sits somewhere under ~/.clawx/xdg-data/opencode/.

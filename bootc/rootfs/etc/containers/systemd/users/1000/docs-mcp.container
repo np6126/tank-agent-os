@@ -35,6 +35,17 @@ Environment=PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 # auto-detects based on TTY and falls back to stdio in non-TTY container
 # launches. opencode connects remotely via HTTP, so force the HTTP transport.
 Exec=--protocol http --host 0.0.0.0 --port 6280 --no-logo
+# Health probe — see mcp-searxng.container for the full rationale. docs-mcp's
+# image ships no curl/wget; `node` is its entrypoint runtime and always
+# present, so the probe is a one-line TCP connect to the MCP HTTP port.
+# HealthOnFailure=kill + Restart=on-failure recreate a wedged container,
+# rate-limited by StartLimit* in [Unit].
+HealthCmd=node -e "const s=require('net').connect(6280,'127.0.0.1');s.setTimeout(5000);s.on('connect',()=>process.exit(0));s.on('error',()=>process.exit(1));s.on('timeout',()=>process.exit(1))"
+HealthInterval=30s
+HealthTimeout=10s
+HealthRetries=3
+HealthStartPeriod=30s
+HealthOnFailure=kill
 
 [Service]
 # ~600 MB unpacked image (Chromium layer) — on a slow first-boot link the

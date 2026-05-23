@@ -1,0 +1,305 @@
+#!/usr/bin/env python3
+"""anthropic-strip-proxy — in-container query-string normaliser for claude.
+
+Claude Code appends `?beta=true` to `/v1/messages`. An Ollama backend hangs
+on that query string (claude-code issue #51239); the same request without it
+succeeds. This proxy deletes the query string from every request and forwards
+it verbatim to the configured backend, streaming the response back so SSE
+events flow incrementally. Egress honours HTTP(S)_PROXY / NO_PROXY, so the
+forwarded request still leaves the sandbox through the allowlisted egress
+proxy — the same path the agents themselves use.
+
+Runtime wiring (see bootc/clawx-runtime/clawx-init and the clawx wrapper):
+  - clawx-init starts `anthropic-strip-proxy` at container boot.
+  - On each `claude` invocation the clawx wrapper runs
+    `anthropic-strip-proxy --set-upstream` (backend URL on stdin) and points
+    the agent at ANTHROPIC_BASE_URL=http://127.0.0.1:8765.
+  - claw/opencode never reach this proxy — they do not append ?beta=true.
+
+Stdlib only — no venv, no third-party deps. Modes:
+  anthropic-strip-proxy                          run the proxy server
+  anthropic-strip-proxy --set-upstream           read a backend URL from stdin
+  anthropic-strip-proxy --ping [--wait SECONDS]  liveness probe
+"""
+import http.client
+import os
+import socket
+import ssl
+import sys
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlsplit
+from urllib.request import proxy_bypass
+
+LISTEN_HOST = "127.0.0.1"
+LISTEN_PORT = 8765
+STATE_DIR = "/tmp/anthropic-strip-proxy"
+HANDOFF = os.path.join(STATE_DIR, "upstream")
+UPSTREAM_TIMEOUT = 600  # seconds — generous ceiling for a slow model turn
+
+# Hop-by-hop headers (RFC 7230 §6.1) plus Content-Length: http.client
+# recomputes the request length, and the response is streamed to EOF under
+# Connection: close, so a forwarded Content-Length would only mislead.
+HOP_BY_HOP = frozenset({
+    "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+    "te", "trailers", "transfer-encoding", "upgrade", "content-length",
+})
+
+
+def log(msg):
+    sys.stderr.write("anthropic-strip-proxy: %s\n" % msg)
+    sys.stderr.flush()
+
+
+# --- pure helpers (unit-tested by tools/test-strip-proxy.py) ----------------
+
+def normalize_upstream(url):
+    """Return URL with a scheme — a bare host:port defaults to http://."""
+    return url if "://" in url else "http://" + url
+
+
+def strip_query(request_target):
+    """Return the path of an HTTP request target, dropping the query string.
+
+    This is the proxy's whole reason to exist: it deletes the ?beta=true that
+    Claude Code appends and that hangs an Ollama backend.
+    """
+    return urlsplit(request_target).path or "/"
+
+
+def forward_path(upstream, request_path):
+    """Join the upstream's base path with the (query-stripped) request path."""
+    base = urlsplit(normalize_upstream(upstream)).path.rstrip("/")
+    return base + request_path
+
+
+def upstream_endpoint(upstream):
+    """Return (scheme, host, port) for an upstream URL."""
+    parts = urlsplit(normalize_upstream(upstream))
+    scheme = parts.scheme or "http"
+    port = parts.port or (443 if scheme == "https" else 80)
+    return scheme, parts.hostname, port
+
+
+def proxy_for(scheme, host):
+    """Return (host, port) of the egress proxy to route a scheme://host
+    request through, or None for a direct connection. Honours HTTP(S)_PROXY
+    and NO_PROXY — the same egress proxy the agents use, so the forwarded
+    request stays inside the sandbox's allowlisted egress path."""
+    env = (os.environ.get(scheme.upper() + "_PROXY")
+           or os.environ.get(scheme.lower() + "_proxy"))
+    if not env:
+        return None
+    try:
+        if proxy_bypass(host):
+            return None
+    except (KeyError, TypeError):
+        pass
+    _, p_host, p_port = upstream_endpoint(env)
+    return (p_host, p_port) if p_host else None
+
+
+def open_upstream(scheme, host, port, path, proxy):
+    """Open an http.client connection for the upstream request and return
+    (connection, request_target). Through the egress proxy a plain-HTTP hop
+    carries an absolute-URI request target and an HTTPS hop is CONNECT-
+    tunnelled to the backend; a direct connection uses the path as-is. The
+    connection is returned unconnected — .request() drives it."""
+    if proxy and scheme == "https":
+        conn = http.client.HTTPSConnection(
+            proxy[0], proxy[1], timeout=UPSTREAM_TIMEOUT,
+            context=ssl.create_default_context())
+        conn.set_tunnel(host, port)
+        return conn, path
+    if proxy:
+        conn = http.client.HTTPConnection(
+            proxy[0], proxy[1], timeout=UPSTREAM_TIMEOUT)
+        return conn, "http://%s:%d%s" % (host, port, path)
+    if scheme == "https":
+        conn = http.client.HTTPSConnection(
+            host, port, timeout=UPSTREAM_TIMEOUT,
+            context=ssl.create_default_context())
+        return conn, path
+    conn = http.client.HTTPConnection(host, port, timeout=UPSTREAM_TIMEOUT)
+    return conn, path
+
+
+# --- handoff file -----------------------------------------------------------
+
+def read_upstream():
+    """Return the configured backend URL, or None if none is set yet."""
+    try:
+        with open(HANDOFF, encoding="utf-8") as fh:
+            return fh.read().strip() or None
+    except FileNotFoundError:
+        return None
+
+
+def write_upstream(text):
+    """Atomically record the backend URL for the running server to pick up."""
+    os.makedirs(STATE_DIR, exist_ok=True)
+    tmp = "%s.tmp.%d" % (HANDOFF, os.getpid())
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    os.replace(tmp, HANDOFF)
+
+
+# --- proxy server -----------------------------------------------------------
+
+class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, fmt, *args):
+        pass  # silence the default access log — log() covers what we need
+
+    def _fail(self, code, message):
+        self.close_connection = True
+        body = (message + "\n").encode("utf-8")
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(body)
+        except OSError:
+            pass
+        log("<- %d %s" % (code, message))
+
+    def _forward(self):
+        upstream = read_upstream()
+        if not upstream:
+            self._fail(503, "no upstream configured "
+                            "(clawx wrapper has not run --set-upstream yet)")
+            return
+
+        path = strip_query(self.path)
+        target = forward_path(upstream, path)
+        scheme, host, port = upstream_endpoint(upstream)
+        if not host:
+            self._fail(502, "malformed upstream URL: %s" % upstream)
+            return
+
+        # The request body is framed by Content-Length only — http.client
+        # reframes it for the upstream. A chunked request body carries no
+        # length to read, so reject it loudly rather than forward an empty one.
+        if self.headers.get("Transfer-Encoding"):
+            self._fail(501, "chunked request bodies are not supported")
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            self._fail(400, "invalid Content-Length header")
+            return
+        if length < 0:
+            self._fail(400, "negative Content-Length header")
+            return
+        body = self.rfile.read(length) if length else b""
+
+        headers = {k: v for k, v in self.headers.items()
+                   if k.lower() not in HOP_BY_HOP and k.lower() != "host"}
+        default_port = (scheme == "https" and port == 443) or \
+                       (scheme == "http" and port == 80)
+        headers["Host"] = host if default_port else "%s:%d" % (host, port)
+
+        proxy = proxy_for(scheme, host)
+        had_query = bool(urlsplit(self.path).query)
+        log("-> %s %s%s%s" % (
+            self.command, self.path,
+            "  [query stripped]" if had_query else "",
+            "  via proxy %s:%d" % proxy if proxy else ""))
+
+        conn = None
+        try:
+            conn, req_target = open_upstream(scheme, host, port, target, proxy)
+            conn.request(self.command, req_target, body=body, headers=headers)
+            resp = conn.getresponse()
+        except Exception as exc:  # noqa: BLE001 - surface any upstream failure
+            if conn is not None:
+                conn.close()
+            self._fail(502, "upstream error: %s" % exc)
+            return
+
+        log("<- %s %s  (%s)" % (resp.status, resp.reason, target))
+        self.close_connection = True
+        try:
+            # send_response_only, not send_response: the latter also emits the
+            # handler's own Server/Date headers, which would duplicate the
+            # upstream's forwarded just below.
+            self.send_response_only(resp.status, resp.reason)
+            for key, value in resp.getheaders():
+                if key.lower() not in HOP_BY_HOP:
+                    self.send_header(key, value)
+            self.send_header("Connection", "close")
+            self.end_headers()
+            while True:
+                chunk = resp.read(8192)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                self.wfile.flush()
+        except Exception as exc:  # noqa: BLE001 - any mid-stream failure
+            log("   stream interrupted: %s" % exc)
+        finally:
+            conn.close()
+
+    do_GET = _forward
+    do_POST = _forward
+    do_PUT = _forward
+    do_DELETE = _forward
+    do_PATCH = _forward
+
+
+def serve():
+    os.makedirs(STATE_DIR, exist_ok=True)
+    server = ThreadingHTTPServer((LISTEN_HOST, LISTEN_PORT), Handler)
+    log("listening on http://%s:%d" % (LISTEN_HOST, LISTEN_PORT))
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+
+
+def ping(wait_seconds):
+    """Return True if the server accepts a connection within wait_seconds."""
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        try:
+            with socket.create_connection((LISTEN_HOST, LISTEN_PORT), 1):
+                return True
+        except OSError:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.1)
+
+
+def cmd_set_upstream():
+    raw = sys.stdin.read().strip()
+    if not raw:
+        log("--set-upstream: empty input")
+        sys.exit(2)
+    write_upstream(raw)
+
+
+def main():
+    args = sys.argv[1:]
+    if not args:
+        serve()
+    elif args[0] == "--set-upstream":
+        cmd_set_upstream()
+    elif args[0] == "--ping":
+        wait = 0.0
+        if "--wait" in args:
+            try:
+                wait = float(args[args.index("--wait") + 1])
+            except (IndexError, ValueError):
+                log("--wait needs a number of seconds")
+                sys.exit(2)
+        sys.exit(0 if ping(wait) else 1)
+    else:
+        log("unknown argument: %s" % args[0])
+        sys.exit(2)
+
+
+if __name__ == "__main__":
+    main()

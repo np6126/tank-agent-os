@@ -13,6 +13,9 @@ User=%U:%G
 # but must match those in service-gator.container exactly.
 SecurityLabelLevel=s0:c200,c500
 Volume=/usr/local/bin/agent:/usr/local/bin/agent:ro
+# The build-recorded SHA-256 of the agent binary, mounted next to it so the
+# acceptance suite can verify the binary still matches what the image baked.
+Volume=/usr/local/share/tank-os/agent.sha256:/usr/local/share/tank-os/agent.sha256:ro
 # CLAUDE.md and AGENTS.md point at the same root-owned source so both
 # claw-code (CLAUDE.md) and opencode (AGENTS.md) find their expected file.
 Volume=/etc/clawx/CLAUDE.md:/home/clawx/CLAUDE.md:ro
@@ -44,6 +47,16 @@ Volume=/etc/clawx/opencode-config.json:/home/clawx/.clawx/xdg-config/opencode/co
 # HTTP MCP server on the bridge. Listing all four unconditionally is fine — a
 # server whose container is down fails the connection soft, like opencode.
 Volume=/etc/clawx/claw-settings.json:/home/clawx/.claw/settings.json:ro
+# claude-code MCP config. claude-code speaks streamable-HTTP MCP natively, so
+# these entries point straight at the bridge endpoints — no mcp-proxy (unlike
+# claw-settings.json above). The wrapper passes --mcp-config with the path
+# below plus --strict-mcp-config, so a project .mcp.json in a cloned repo
+# cannot inject servers. opencode and claw-code ignore this file.
+Volume=/etc/clawx/claude-mcp.json:/etc/clawx/claude-mcp.json:ro
+# claude-code managed settings — highest-precedence layer, mounted read-only
+# so the agent cannot rewrite it. Carries the telemetry lockdown and the
+# bypassPermissions default mode. opencode and claw-code ignore this path.
+Volume=/etc/clawx/claude-managed-settings.json:/etc/claude-code/managed-settings.json:ro
 Network=clawx-isolated.network
 Environment=HOME=/home/clawx
 Environment=TERM=xterm-256color
@@ -56,6 +69,17 @@ Environment=XDG_CONFIG_HOME=/home/clawx/.clawx/xdg-config
 Environment=XDG_DATA_HOME=/home/clawx/.clawx/xdg-data
 Environment=XDG_CACHE_HOME=/home/clawx/.clawx/xdg-cache
 Environment=XDG_STATE_HOME=/home/clawx/.clawx/xdg-state
+# Claude Code telemetry / auto-update kill-switches. Root-controlled here and
+# doubly enforced by claude-managed-settings.json (env block). The agent
+# binary is mounted read-only, so auto-update cannot succeed anyway — these
+# vars stop the futile egress attempt. claw-code and opencode ignore them.
+Environment=CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+Environment=DISABLE_AUTOUPDATER=1
+Environment=DISABLE_UPDATES=1
+Environment=DISABLE_TELEMETRY=1
+Environment=DISABLE_ERROR_REPORTING=1
+Environment=DISABLE_FEEDBACK_COMMAND=1
+Environment=DO_NOT_TRACK=1
 # Lock opencode's MCP-server set (plus hooks/plugins) to the baked,
 # root-owned config. Without this, opencode merges project-scoped
 # opencode.json / .opencode/ discovered by walking up from the cwd — and

@@ -53,7 +53,15 @@ if podman secret inspect proxy_ca_cert >/dev/null 2>&1; then
         else
             printf '%s\n' "$proxy_ca" > "$tmp_bundle"
         fi
-        mv -f "$tmp_bundle" "$merged_bundle"
+        # Skip the rename when the freshly-built bundle is byte-identical to
+        # what is already in place. This script is a shared ExecStartPre of
+        # both clawx.service and service-gator.service, so it runs on every
+        # (re)start of either — the guard avoids needless inode churn.
+        if [[ -f "$merged_bundle" ]] && cmp -s "$tmp_bundle" "$merged_bundle"; then
+            rm -f "$tmp_bundle"
+        else
+            mv -f "$tmp_bundle" "$merged_bundle"
+        fi
         trap - EXIT
     fi
 else

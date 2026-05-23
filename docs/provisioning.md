@@ -34,8 +34,8 @@ clawx --version
 ```
 
 The `clawx` command on the host delegates to the running rootless container
-and executes the pinned agent binary (`claw-code` or `opencode`, depending
-on `AGENT_KIND`). See [cli.md](cli.md).
+and executes the pinned agent binary (`claw-code`, `opencode`, or Claude
+Code, depending on `AGENT_KIND`). See [cli.md](cli.md).
 
 ## Local macOS VM
 
@@ -122,20 +122,34 @@ Restart the service after changes that affect the container:
 systemctl --user restart clawx.service
 ```
 
+## Toolchains
+
+The agent's build toolchain — JDK, Android SDK, Gradle, Kotlin — is not baked
+into the image. `/usr/libexec/tank-os/provision-toolchains` downloads it into
+the agent's writable `~/.clawx/toolchains` mount, driven by
+`/etc/clawx/toolchains.conf`. The clawx container already ships `JAVA_HOME`,
+`ANDROID_HOME`, `GRADLE_USER_HOME` and `PATH` pointing at that location.
+
+`toolchains.conf` lists a URL and a pinned SHA-256 per artifact; see
+`/usr/share/tank-os/toolchains.conf.example`, which ships pinned for the
+versions it lists. `provision-toolchains` verifies every download and aborts
+on a mismatch. To change a version, blank that `*_SHA256` and run once — the
+verified hash is recorded to `~/.clawx/toolchains/PROVENANCE.txt` — then copy
+it back to re-pin. A cloud-init deployment writes `toolchains.conf` and
+invokes `provision-toolchains` from its `runcmd`.
+
+The download runs as root and goes direct, not through the egress proxy: it is
+one-time operator provisioning, and integrity is enforced by the SHA-256 pin
+rather than by the proxy audit log.
+
 ## Podman Secrets
 
-Create Podman secrets in the `clawx` user's rootless store:
+Store Podman secrets in the `clawx` user's rootless store with `clawx setup` —
+it stores the value, regenerates the Quadlet drop-ins, and restarts the agent:
 
 ```bash
 sudo -iu clawx
-printf '%s' "$AGENT_API_KEY" | podman secret create agent_api_key -
-```
-
-Then sync the generated Quadlet drop-ins:
-
-```bash
-tank-clawx-secrets
-systemctl --user restart clawx.service
+printf '%s' "$AGENT_API_KEY" | clawx setup agent_api_key
 ```
 
 Do not create these secrets as root unless you intentionally switch to a rootful
@@ -175,9 +189,8 @@ printf 'CLAWX_PROXY_URL=http://proxy.example.internal:8080\nCLAWX_PROXY_PORT=808
 printf '%s' 'http://proxy.example.internal:8080' \
   | podman secret create proxy_url -
 cat mitmproxy-ca-cert.pem | podman secret create proxy_ca_cert -
-tank-clawx-secrets
 sudo systemctl restart clawx-nftables.service
-systemctl --user restart clawx.service
+clawx setup
 ```
 
 `tank-clawx-secrets` generates a Quadlet drop-in that sets `HTTP_PROXY`,

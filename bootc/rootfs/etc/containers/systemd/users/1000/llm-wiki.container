@@ -35,6 +35,22 @@ Volume=llm-wiki-data:/wikis
 # 0.0.0.0:3100/mcp — the path opencode connects to by container name
 # (http://llm-wiki:3100/mcp).
 
+# Health probe — see mcp-searxng.container for the full rationale. The
+# python:3.12-slim base ships no curl/wget; python3 is always present, so
+# the probe is a one-line TCP connect to the MCP HTTP port. HealthStartPeriod
+# is wider than the other MCP containers: the entrypoint clones the wiki
+# repos from Gitea *before* it binds 3100, so the port legitimately does not
+# exist for the first minute or so — probe failures inside the start period
+# do not count. Widen it further if an operator's wikis are large.
+# HealthOnFailure=kill + Restart=on-failure recreate a wedged container,
+# rate-limited by StartLimit* in [Unit].
+HealthCmd=python3 -c "import socket; socket.create_connection(('127.0.0.1',3100),timeout=5).close()"
+HealthInterval=30s
+HealthTimeout=10s
+HealthRetries=3
+HealthStartPeriod=120s
+HealthOnFailure=kill
+
 [Service]
 TimeoutStartSec=300
 Restart=on-failure

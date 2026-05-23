@@ -22,10 +22,11 @@ which maps to:
 ~clawx/workspaces
 ```
 
-The service-gator MCP endpoint is wired into both agent variants
+The service-gator MCP endpoint is wired into all three agent variants
 automatically — opencode via `gen-opencode-config`, claw-code via the baked
-`/etc/clawx/claw-settings.json`. Credentials for external services should be
-supplied after boot through the `clawx` user's rootless Podman secret store.
+`/etc/clawx/claw-settings.json`, Claude Code via `/etc/clawx/claude-mcp.json`.
+Credentials for external services should be supplied after boot through the
+`clawx` user's rootless Podman secret store.
 
 Supported secret names:
 
@@ -40,14 +41,12 @@ Example:
 
 ```bash
 sudo -iu clawx
-printf '%s' "$GH_TOKEN" | podman secret create gh_token -
-tank-clawx-secrets
-systemctl --user restart service-gator.service
+printf '%s' "$GH_TOKEN" | clawx setup gh_token
 ```
 
-`tank-clawx-secrets` writes a user Quadlet drop-in that mounts those secrets
-under `/run/secrets`, matching the `*_TOKEN_FILE` environment used by the
-`service-gator` container.
+`clawx setup` runs `tank-clawx-secrets`, which writes a user Quadlet drop-in
+that mounts those secrets under `/run/secrets` — matching the `*_TOKEN_FILE`
+environment the `service-gator` container expects — and restarts the service.
 
 ## Scopes
 
@@ -64,7 +63,7 @@ sudo -iu clawx
 mkdir -p ~/.config/service-gator
 cp /usr/share/tank-os/scopes.json.example ~/.config/service-gator/scopes.json
 $EDITOR ~/.config/service-gator/scopes.json
-systemctl --user restart service-gator.service
+clawx setup
 ```
 
 ### Permission reference

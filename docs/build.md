@@ -35,6 +35,7 @@ The bootc image embeds exactly one agent at build time, chosen via
 |--------------|-------------|---------------------------------------------------|
 | `opencode`   | `opencode`  | upstream Bun-compiled binary, SHA-pinned download (default) |
 | `claw`       | `claw-code` | source-build (Rust/cargo) with patches (experimental) |
+| `claude`     | Claude Code | upstream native binary, GPG-verified manifest + SHA-pinned download |
 
 One agent per image — no runtime switching. The host wrapper
 (`/usr/local/bin/clawx`) reads `/etc/clawx/agent.kind` to know which agent's
@@ -75,6 +76,8 @@ The CI workflow publishes:
 | `tank-agent-os:claw-<sha>`        | pinned claw build for commit `<sha>`    |
 | `tank-agent-os:opencode`          | latest opencode build                   |
 | `tank-agent-os:opencode-<sha>`    | pinned opencode build for commit `<sha>`|
+| `tank-agent-os:claude`            | latest claude build                     |
+| `tank-agent-os:claude-<sha>`      | pinned claude build for commit `<sha>`  |
 | `tank-agent-os:latest`            | alias for `:opencode` (the default agent) |
 | `tank-agent-os:<sha>`             | alias for `:opencode-<sha>`             |
 
@@ -96,6 +99,12 @@ OPENCODE_RELEASE_BASE=https://github.com/anomalyco/opencode/releases/download
 OPENCODE_REF=v1.15.4
 OPENCODE_ASSET=opencode-linux-x64.tar.gz
 OPENCODE_SHA256=f0734928...         # see "Reproducible build" below
+
+# claude (upstream native binary download, GPG-verified manifest)
+CLAUDE_CODE_RELEASE_BASE=https://downloads.claude.ai/claude-code-releases
+CLAUDE_CODE_REF=2.1.140
+CLAUDE_CODE_PLATFORM=linux-x64
+CLAUDE_CODE_SHA256=807a5d6c...      # see "Reproducible build" below
 ```
 
 If `CLAWX_RUNTIME_IMAGE` and `CLAWX_RUNTIME_REF` are omitted, the Quadlet uses
@@ -103,17 +112,14 @@ the unmodified `quay.io/fedora/fedora:44` base image (no development tools).
 
 ### Reproducible build
 
-The same pin-then-verify pattern applies to both agents, but the trust input
-differs:
+The same pin-then-verify pattern applies to all three agents, but the trust
+input differs:
 
 | Agent     | What is pinned             | What is verified                     |
 |-----------|----------------------------|--------------------------------------|
 | `claw`    | Git commit + 5 patches     | SHA-256 of the locally-built binary  |
 | `opencode`| Upstream release tag + asset | SHA-256 of the downloaded tarball   |
-
-For claw, the trust surface includes our toolchain (Fedora `rust`) and the
-patches. For opencode, the trust surface is the upstream maintainer's CI —
-we only verify the artifact's identity.
+| `claude`  | Release version + platform | GPG signature over the release manifest, then SHA-256 of the binary against both the manifest and the in-repo pin |
 
 #### claw-code
 
@@ -146,17 +152,45 @@ and re-hashes it for the runtime hash file.
 The trust assumption is the same as for `service-gator`: we trust the
 upstream maintainer's build and verify only the artifact's identity.
 
+#### claude-code
+
+The `claude-builder` stage **does not compile**. It downloads the native
+single-file binary for `CLAUDE_CODE_REF` / `CLAUDE_CODE_PLATFORM` from
+`downloads.claude.ai`, alongside the release `manifest.json` and its
+detached GPG signature, and then:
+
+1. imports Anthropic's release-signing key from the in-repo trust anchor
+   `bootc/keys/claude-code-release.asc` and hard-checks its fingerprint
+   (`31DD DE24 DDFA B679 F42D 7BD2 BAA9 29FF 1A7E CACE`) — a swapped key
+   file fails the build;
+2. verifies the manifest's detached signature against that key
+   (`gpg --verify`);
+3. checks the binary's SHA-256 against the `checksum` recorded in the
+   GPG-verified manifest;
+4. checks the same SHA-256 against the in-repo `CLAUDE_CODE_SHA256` pin.
+
+Rooting trust in the checked-in key — rather than in a build-time key
+download — means the GPG step also protects a record-only build (one where
+`CLAUDE_CODE_SHA256` is still empty). There is no `tar` step: the
+distribution ships a raw binary. `CLAUDE_CODE_REF` must be `>= 2.1.89`;
+earlier releases ship no signed manifest.
+
+The trust assumption is the same as for `opencode` and `service-gator` — we
+trust the upstream maintainer's build and verify the artifact's identity,
+plus the publisher's GPG signature over the manifest.
+
 #### Selected binary in the final image
 
-The final stage `COPY`es both builder outputs into `/opt/agent-candidates/`
-and a `RUN` step selects the one matching `AGENT_KIND`, installs it as
-`/usr/local/bin/agent`, and writes the hash file to
-`/usr/local/share/tank-os/agent.sha256`. The unselected candidate is removed.
+The final stage `COPY`es all three builder outputs into
+`/opt/agent-candidates/` and a `RUN` step selects the one matching
+`AGENT_KIND`, installs it as `/usr/local/bin/agent`, and writes the hash file
+to `/usr/local/share/tank-os/agent.sha256`. The unselected candidates are
+removed.
 The selected agent's identity is recorded in `/etc/clawx/agent.kind` for the
 host wrapper to consult.
 
-**Recording-then-pinning workflow** (same for both agents — replace `<NAME>`
-with `CLAW_CODE` or `OPENCODE`):
+**Recording-then-pinning workflow** (same for all three agents — replace
+`<NAME>` with `CLAW_CODE`, `OPENCODE`, or `CLAUDE_CODE`):
 
 1. First build of a new `<NAME>_REF` — leave `<NAME>_SHA256` empty. The
    build log prints the recorded hash.
@@ -171,6 +205,9 @@ with `CLAW_CODE` or `OPENCODE`):
 - For `opencode`: `OPENCODE_REF` bumped or `OPENCODE_ASSET` switched (e.g.
   arm64 vs amd64). Toolchain changes upstream do not concern us since we
   download a pre-built binary.
+- For `claude`: `CLAUDE_CODE_REF` bumped or `CLAUDE_CODE_PLATFORM` switched
+  (e.g. arm64 vs amd64). Like opencode, upstream toolchain changes do not
+  concern us — we download a pre-built binary.
 
 **Runtime verification:** the hash file ships at
 `/usr/local/share/tank-os/agent.sha256` (path is agent-agnostic). On a
@@ -194,6 +231,8 @@ agent variant is installed.
 | `tank-agent-os:claw-<sha>`        | pinned claw build for that commit                    |
 | `tank-agent-os:opencode`          | latest opencode build                                |
 | `tank-agent-os:opencode-<sha>`    | pinned opencode build for that commit                |
+| `tank-agent-os:claude`            | latest claude build                                  |
+| `tank-agent-os:claude-<sha>`      | pinned claude build for that commit                  |
 | `tank-agent-os:latest`            | alias for `:opencode` (the default agent)            |
 | `tank-agent-os:<sha>`             | alias for `:opencode-<sha>`                          |
 
@@ -275,8 +314,8 @@ out-tank-agent-os/qcow2/disk.qcow2
 ## What The Image Installs
 
 The image creates a `clawx` login user with UID/GID 1000, enables linger for
-that user, installs a pinned `/usr/local/bin/agent` (the agent binary, either
-claw-code or opencode depending on `AGENT_KIND`), and installs a rootless
+that user, installs a pinned `/usr/local/bin/agent` (the agent binary — claw-code,
+opencode, or Claude Code depending on `AGENT_KIND`), and installs a rootless
 Quadlet at:
 
 ```text
@@ -301,9 +340,10 @@ then apply it to the running VM. No VM teardown is needed — disk state
 
 | Component | ARG to change | Where it lives |
 |---|---|---|
-| Agent selection | `AGENT_KIND` (`claw` or `opencode`) | one builder stage per agent; only the selected one is installed under `/usr/local/bin/agent` |
+| Agent selection | `AGENT_KIND` (`claw`, `opencode`, or `claude`) | one builder stage per agent; only the selected one is installed under `/usr/local/bin/agent` |
 | `claw-code` | `CLAW_CODE_REF` + `CLAW_CODE_SHA256` | compiled into bootc image when `AGENT_KIND=claw`; binary hash verified at build time |
 | `opencode` | `OPENCODE_REF` + `OPENCODE_SHA256` (+ `OPENCODE_ASSET` for arch) | downloaded into bootc image when `AGENT_KIND=opencode`; tarball + binary hashes verified at build time |
+| Claude Code | `CLAUDE_CODE_REF` + `CLAUDE_CODE_SHA256` (+ `CLAUDE_CODE_PLATFORM` for arch) | downloaded into bootc image when `AGENT_KIND=claude`; release manifest GPG-verified, binary hash verified at build time |
 | `@opencode-ai/plugin` SDK | `OPENCODE_PLUGIN_VERSION` + `OPENCODE_PLUGIN_SHA256` in `bootc/clawx-runtime/Containerfile` | npm tarball downloaded + sha256-verified at clawx-runtime build, pre-installed into image so opencode's startup-time `bun install` finds it locally and skips the runtime npm fetch. **Must be bumped together with `OPENCODE_REF`** — opencode pins this dep internally to its own binary version, and a mismatch makes opencode treat the dep as dirty and trigger the runtime install path we are closing. |
 | `service-gator` | `SERVICE_GATOR_REF` | digest substituted into Quadlet at build time |
 | SearXNG | `SEARXNG_REF` | digest substituted into Quadlet at build time (opencode image auto-enables; claw image ships disabled) |
@@ -363,13 +403,55 @@ build with an older `ARG` value.
    ```
 
 3. Bump `OPENCODE_REF` and `OPENCODE_SHA256` in `bootc/Containerfile`.
-4. Rebuild with `--build-arg AGENT_KIND=opencode`. The build verifies the
+4. Re-check the opencode subcommand pass-through list in the `clawx` wrapper
+   (`bootc/rootfs/usr/local/bin/clawx`) against the new release — a
+   subcommand opencode added since the last bump would otherwise be treated
+   as a bare prompt.
+5. Rebuild with `--build-arg AGENT_KIND=opencode`. The build verifies the
    tarball hash before extraction; mismatch fails the build.
-5. Push and apply on the running VM.
+6. Push and apply on the running VM.
 
-### When a full VM rebuild is needed
+### Example: updating claude
 
-`rebuild-vm.sh` (which destroys and recreates the VM) is only required when
-cloud-init provisioning state needs to change — SSH keys, static IP, proxy
-config written by `write_files`, or secrets injected at first boot. It is
-never required for component version changes.
+1. Pick the new version from
+   `https://downloads.claude.ai/claude-code-releases/stable` (or `latest`).
+   It must be `>= 2.1.89` — earlier releases ship no signed manifest.
+2. Read the `linux-x64` checksum straight from the signed manifest:
+
+   ```bash
+   curl -fsSL \
+     "https://downloads.claude.ai/claude-code-releases/<version>/manifest.json" \
+     | jq -r '.platforms["linux-x64"].checksum'
+   ```
+
+3. Bump `CLAUDE_CODE_REF` and `CLAUDE_CODE_SHA256` in `bootc/Containerfile`.
+4. Re-check the claude subcommand pass-through list in the `clawx` wrapper
+   (`bootc/rootfs/usr/local/bin/clawx`) against the CLI reference for the
+   new version — a subcommand added since the last bump would otherwise be
+   treated as a bare prompt.
+5. Rebuild with `--build-arg AGENT_KIND=claude`. The build GPG-verifies the
+   manifest and checks the binary against both the manifest checksum and the
+   pin; any mismatch fails the build.
+6. Push and apply on the running VM.
+
+## Recovery model
+
+tank-agent-os has no backup-and-restore procedure — by design. The
+appliance is stateless: every class of on-VM state is reconstructable
+from outside the VM or is disposable, so recovery is **rebuild, not
+restore**.
+
+| State | On the VM | Recovered by |
+|---|---|---|
+| Code being worked on | `~/workspaces` — git working trees | re-clone from the external git remote |
+| Agent runtime state | `~/.clawx` — generated config and caches | regenerated on first boot and by `tank-clawx-secrets` |
+| Provider keys & tokens | rootless Podman secrets | re-created from the operator's credentials |
+| Durable knowledge | not on the VM | the git-backed [llm-wiki](llm-wiki.md), canonical repos on an external git host |
+| The OS | the bootc image | re-pulled from the registry |
+
+`rebuild-vm.sh` is required only when cloud-init provisioning state
+changes (SSH keys, static IP, proxy config, first-boot secrets) — never
+for a component version change — and it is equally the way to recover a
+corrupted VM. Known trigger: a boot crash-loop can corrupt the SELinux
+labelling state on `/var`; `bootc upgrade` does not repair it (`/var`
+persists across an upgrade), so a rebuild with a fresh `/var` is the fix.

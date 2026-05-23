@@ -91,9 +91,9 @@ ship with the upstream-author's PostHog API key embedded in the bundle.
 **Disposition.** **Accept.** With telemetry disabled at runtime
 (F-DM-001 mitigation), the key is never used. If the operator wants
 defence in depth, they can rebuild the image without
-`POSTHOG_API_KEY` set — but that adds an OSS-blocker to the
-TODO_oss_release.md (image self-build, not a digest pin), so not
-recommended unless telemetry-disable is felt insufficient.
+`POSTHOG_API_KEY` set — but that makes the image an operator self-build
+rather than a digest pin — an OSS-release blocker — so not recommended
+unless telemetry-disable is felt insufficient.
 
 ## Recommended ongoing controls
 
