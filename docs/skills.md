@@ -1,8 +1,8 @@
 # Skills
 
-tank-agent-os exposes a single host-side skill directory that both supported
-agents (`claw-code` and `opencode`) read at startup. Drop a skill in,
-restart the agent session, and the skill becomes available.
+tank-agent-os exposes a single host-side skill directory that all supported
+agents (`claw-code`, `opencode`, and `claude`) read at startup. Drop a skill
+in, restart the agent session, and the skill becomes available.
 
 ## Location
 
@@ -18,7 +18,7 @@ path:
 
 | Agent | Expected path inside container | Symlinked to |
 |---|---|---|
-| `claw-code` | `~/.claude/skills/` | `~/.clawx/skills/` |
+| `claw-code`, `claude` | `~/.claude/skills/` | `~/.clawx/skills/` |
 | `opencode` | `$XDG_CONFIG_HOME/opencode/skills/` (= `~/.clawx/xdg-config/opencode/skills/`) | `~/.clawx/skills/` |
 
 Only one agent runs per image (`AGENT_KIND` is fixed at build), so a
@@ -27,13 +27,13 @@ created — the inactive symlink simply isn't read.
 
 ## Skill format
 
-Both agents accept the SKILL.md + YAML-frontmatter convention: a
+Every agent accepts the SKILL.md + YAML-frontmatter convention: a
 directory per skill containing a `SKILL.md`, plus any supporting files
-the skill needs. **Field semantics differ between the two agents** —
-the shape rhymes, the schema doesn't. Refer to each agent's own docs
-for the canonical fields:
+the skill needs. **Field semantics differ between agents** — the shape
+rhymes, the schema doesn't. Refer to each agent's own docs for the
+canonical fields:
 
-- claw-code → [Claude Code skills](https://code.claude.com/docs/en/skills)
+- claw-code and `claude` → [Claude Code skills](https://code.claude.com/docs/en/skills)
 - opencode → [opencode skills](https://opencode.ai/docs/skills/)
 
 ```text
@@ -43,7 +43,7 @@ for the canonical fields:
     └── (optional support files)
 ```
 
-Minimal `SKILL.md` that works on both:
+Minimal `SKILL.md` that works on every agent:
 
 ```markdown
 ---
@@ -56,10 +56,10 @@ When the operator asks you to test the hello-world skill, respond with
 ```
 
 opencode-specific fields (`allowed-tools`, `license`, `metadata`) are
-ignored by claw-code; Claude-Code-specific fields are ignored by
-opencode. The active image only runs one agent (`AGENT_KIND` fixed at
-build), so authoring a skill for the wrong agent is a no-op rather than
-an error.
+ignored by the Claude Code agents (`claw-code`, `claude`); their
+Claude-Code-specific fields are ignored by opencode. The active image
+only runs one agent (`AGENT_KIND` fixed at build), so authoring a skill
+for the wrong agent is a no-op rather than an error.
 
 ## Activation
 
@@ -71,6 +71,8 @@ session:
 clawx run "use the hello-world skill"
 # claw build
 clawx prompt "use the hello-world skill"
+# claude build
+clawx "use the hello-world skill"
 ```
 
 No `systemctl` restart is needed for the container. Each agent rescans

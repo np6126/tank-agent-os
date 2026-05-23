@@ -12,6 +12,12 @@
 #   --cores N         CPU cores (default: 2)
 #   --disk-size SIZE  Disk size, passed to qm resize (default: 30G)
 #   --user-data FILE  Path to cloud-init user-data file (required)
+#   --vendor-data FILE  Optional cloud-init vendor-data file. When supplied,
+#                       it is placed on the NoCloud seed ISO alongside
+#                       user-data; cloud-init merges them at boot (vendor
+#                       runs first, user overrides per merge_how rules).
+#                       Used to keep a single agent-agnostic base file and
+#                       a small per-agent overlay.
 #
 # Example — build two agents on the same host:
 #   rebuild-vm.sh 300
@@ -29,6 +35,7 @@ MEMORY=8192
 CORES=2
 DISK_SIZE="30G"
 USER_DATA=""  # required: set via --user-data
+VENDOR_DATA=""  # optional: set via --vendor-data
 
 # ── argument parsing ───────────────────────────────────────────────────────────
 if [[ $# -eq 0 || "$1" == "--help" || "$1" == "-h" ]]; then
@@ -47,7 +54,8 @@ while [[ $# -gt 0 ]]; do
         --memory)     MEMORY="$2";     shift 2 ;;
         --cores)      CORES="$2";      shift 2 ;;
         --disk-size)  DISK_SIZE="$2";  shift 2 ;;
-        --user-data)  USER_DATA="$2";  shift 2 ;;
+        --user-data)    USER_DATA="$2";    shift 2 ;;
+        --vendor-data)  VENDOR_DATA="$2";  shift 2 ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
 done
@@ -63,6 +71,17 @@ fi
 
 ISO_PATH="/var/lib/vz/template/iso/tank-agent-os-seed-${VMID}.iso"
 BUILD_DIR="/tmp/tank-agent-os-build-${VMID}"
+CIDATA=""
+
+# Remove the QCOW2 build dir and the cloud-init seed dir on exit: once the
+# disk is imported they are no longer needed, and a mid-run failure under
+# `set -e` would otherwise leave the (large) QCOW2 dir behind.
+cleanup() {
+    rm -rf "$BUILD_DIR"
+    [[ -n "$CIDATA" ]] && rm -rf "$CIDATA"
+    return 0
+}
+trap cleanup EXIT
 
 # ── pull image ─────────────────────────────────────────────────────────────────
 echo "==> Pulling $IMAGE ..."
@@ -85,6 +104,9 @@ podman run --rm --privileged \
 echo "==> Building seed ISO ..."
 CIDATA="$(mktemp -d)"
 cp "$USER_DATA" "$CIDATA/user-data"
+if [[ -n "$VENDOR_DATA" ]]; then
+    cp "$VENDOR_DATA" "$CIDATA/vendor-data"
+fi
 printf 'instance-id: clawx-%s\nlocal-hostname: clawx\n' "$(date +%s)" > "$CIDATA/meta-data"
 # network-config is processed by cloud-init-local (before NetworkManager starts),
 # ensuring the static IP is configured before NetworkManager-wait-online runs.
@@ -103,8 +125,10 @@ ethernets:
       addresses:
         - 9.9.9.9
 NETCONF
+ISO_INPUTS=("$CIDATA/user-data" "$CIDATA/meta-data" "$CIDATA/network-config")
+[[ -n "$VENDOR_DATA" ]] && ISO_INPUTS+=("$CIDATA/vendor-data")
 genisoimage -output "$ISO_PATH" -volid cidata -joliet -rock \
-    "$CIDATA/user-data" "$CIDATA/meta-data" "$CIDATA/network-config" 2>/dev/null
+    "${ISO_INPUTS[@]}" 2>/dev/null
 rm -rf "$CIDATA"
 
 # ── stop and destroy existing VM ──────────────────────────────────────────────

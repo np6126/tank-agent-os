@@ -6,16 +6,18 @@ ARG FEDORA_CONTAINER_REF=44
 # UserNS=keep-id, both of which assume 1000.
 ARG CLAWX_UID=1000
 ARG CLAWX_GID=1000
-ARG ANDROID_CMDLINE_TOOLS_VERSION=11076708
-ARG GRADLE_VERSION=8.13
-ARG KOTLIN_VERSION=2.1.21
-ARG JAVA_VERSION=21.0.5+11
 
 FROM ${FEDORA_CONTAINER_IMAGE}:${FEDORA_CONTAINER_REF}
 
-ENV ANDROID_HOME=/opt/android-sdk
-ENV JAVA_HOME=/opt/java/21
-ENV PATH="${PATH}:${JAVA_HOME}/bin:${ANDROID_HOME}/cmdline-tools/latest/bin:${ANDROID_HOME}/platform-tools:/opt/gradle/bin:/opt/kotlinc/bin"
+# Toolchain path convention. The JDK / Android SDK / Gradle / Kotlin are NOT
+# baked into this image — they are operator-provisioned into the agent's
+# writable ~/.clawx mount by /usr/libexec/tank-os/provision-toolchains (see
+# docs/provisioning.md). These vars point at that convention and are inert
+# until it is populated.
+ENV JAVA_HOME=/home/clawx/.clawx/toolchains/jdk
+ENV ANDROID_HOME=/home/clawx/.clawx/toolchains/android-sdk
+ENV GRADLE_USER_HOME=/home/clawx/.clawx/gradle
+ENV PATH="${PATH}:${JAVA_HOME}/bin:${ANDROID_HOME}/cmdline-tools/latest/bin:${ANDROID_HOME}/platform-tools:/home/clawx/.clawx/toolchains/gradle/bin:/home/clawx/.clawx/toolchains/kotlinc/bin"
 
 RUN set -eux; \
     dnf -y install \
@@ -133,44 +135,19 @@ RUN mkdir -p /home/clawx && chown ${CLAWX_UID}:${CLAWX_GID} /home/clawx
 # plugin SDK on first start, then exec's sleep infinity. The container's
 # Quadlet sets Exec=/usr/local/bin/clawx-init explicitly. See the script for
 # the seeding logic and rationale.
+# Mount points for the bootc image's root-owned claude-code config files.
+# clawx.container bind-mounts claude-mcp.json and claude-managed-settings.json
+# into these directories; declaring them keeps the parents root-owned with a
+# known mode rather than relying on podman's implicit mount-point creation.
+RUN mkdir -p /etc/clawx /etc/claude-code
+
 COPY clawx-init /usr/local/bin/clawx-init
 RUN chmod 0755 /usr/local/bin/clawx-init
 
-ARG ANDROID_CMDLINE_TOOLS_VERSION
-ARG GRADLE_VERSION
-ARG KOTLIN_VERSION
-ARG JAVA_VERSION
-RUN set -eux; \
-    JAVA_ENCODED=$(printf '%s' "${JAVA_VERSION}" | sed 's/+/%2B/g'); \
-    JAVA_FILE=$(printf '%s' "${JAVA_VERSION}" | tr '+' '_'); \
-    ARCH=$(uname -m); \
-    case "${ARCH}" in \
-      x86_64)  JAVA_ARCH="x64" ;; \
-      aarch64) JAVA_ARCH="aarch64" ;; \
-      *) echo "Unsupported arch: ${ARCH}" >&2; exit 1 ;; \
-    esac; \
-    curl -Lo /tmp/jdk.tar.gz \
-      "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-${JAVA_ENCODED}/OpenJDK21U-jdk_${JAVA_ARCH}_linux_hotspot_${JAVA_FILE}.tar.gz"; \
-    mkdir -p "${JAVA_HOME}"; \
-    tar -xzf /tmp/jdk.tar.gz -C "${JAVA_HOME}" --strip-components=1; \
-    rm /tmp/jdk.tar.gz; \
-    curl -Lo /tmp/gradle.zip \
-      "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip"; \
-    unzip -q /tmp/gradle.zip -d /opt; \
-    mv "/opt/gradle-${GRADLE_VERSION}" /opt/gradle; \
-    rm /tmp/gradle.zip; \
-    curl -Lo /tmp/kotlin.zip \
-      "https://github.com/JetBrains/kotlin/releases/download/v${KOTLIN_VERSION}/kotlin-compiler-${KOTLIN_VERSION}.zip"; \
-    unzip -q /tmp/kotlin.zip -d /opt; \
-    rm /tmp/kotlin.zip; \
-    curl -o /tmp/cmdline-tools.zip \
-      "https://dl.google.com/android/repository/commandlinetools-linux-${ANDROID_CMDLINE_TOOLS_VERSION}_latest.zip"; \
-    mkdir -p "${ANDROID_HOME}/cmdline-tools"; \
-    unzip -q /tmp/cmdline-tools.zip -d "${ANDROID_HOME}/cmdline-tools"; \
-    mv "${ANDROID_HOME}/cmdline-tools/cmdline-tools" "${ANDROID_HOME}/cmdline-tools/latest"; \
-    rm /tmp/cmdline-tools.zip; \
-    yes | sdkmanager --licenses; \
-    sdkmanager \
-      "platform-tools" \
-      "build-tools;35.0.0" \
-      "platforms;android-35"
+# anthropic-strip-proxy: deletes the ?beta=true query string Claude Code
+# appends to /v1/messages, which hangs an Ollama backend (claude-code issue
+# #51239). clawx-init starts it at container boot; the clawx wrapper feeds it
+# the backend URL and points claude at it. Stdlib-only Python — no venv, no
+# pip deps, unlike mcp-proxy above.
+COPY anthropic-strip-proxy /usr/local/bin/anthropic-strip-proxy
+RUN chmod 0755 /usr/local/bin/anthropic-strip-proxy

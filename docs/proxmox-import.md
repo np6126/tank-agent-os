@@ -17,6 +17,11 @@ bash examples/proxmox/rebuild-vm.sh <vmid> \
 The script generates a fresh `instance-id` in the seed ISO on every run, so
 cloud-init always re-runs after a rebuild. Run with `--help` for all options.
 
+Pass `--vendor-data <file>` to add a cloud-init vendor-data part to the seed
+ISO alongside user-data; cloud-init merges them at boot (vendor first,
+user-data overrides). Useful for keeping an agent-agnostic base file and a
+small per-agent overlay.
+
 ## Manual steps
 
 ### Prerequisites

@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# tank-agent-os — operator toolchain provisioner.
+#
+# Downloads the JDK / Android SDK / Gradle / Kotlin the agent needs into the
+# writable ~/.clawx/toolchains mount, instead of baking a multi-GB toolchain
+# into the clawx-runtime image. The toolchain choice — versions, URLs, pinned
+# hashes — is operator config in /etc/clawx/toolchains.conf (typically written
+# by cloud-init), so it is not hard-coded in any image.
+#
+# Runs as root from a cloud-init runcmd: root egress is not gated by the
+# clawx-nftables rule, so the downloads go direct. They are NOT proxy-audited
+# — a deliberate choice. This is one-time operator provisioning, the same
+# trust class as bootc/dnf; integrity is guaranteed by the SHA-256 pin, not
+# by the egress log. The first run with an empty *_SHA256 records the hash to
+# PROVENANCE.txt for the operator to pin. See docs/provisioning.md.
+#
+# No /etc/clawx/toolchains.conf -> nothing to do (the operator did not opt
+# in). Idempotent: an already-populated toolchain directory is left untouched.
+
+CONFIG="${TOOLCHAINS_CONFIG:-/etc/clawx/toolchains.conf}"
+CLAWX_HOME="${CLAWX_HOME:-/var/home/clawx}"
+DEST="$CLAWX_HOME/.clawx/toolchains"
+PROVENANCE="$DEST/PROVENANCE.txt"
+
+log() { printf '[provision-toolchains] %s\n' "$*"; }
+
+# Download $2 to $3 and SHA-256 verify against $4 (empty = record-only).
+# Appends a provenance record; aborts the run on a hash mismatch.
+fetch_verify() {
+  local name="$1" url="$2" out="$3" want="$4" actual
+  log "fetching $name ..."
+  curl -fSL --retry 3 --retry-delay 2 -o "$out" "$url"
+  actual=$(sha256sum "$out" | awk '{print $1}')
+  {
+    printf '%s\n'            "$name"
+    printf '  url:     %s\n' "$url"
+    printf '  sha256:  %s\n' "$actual"
+  } >>"$PROVENANCE"
+  if [[ -n "$want" ]]; then
+    if [[ "$actual" != "$want" ]]; then
+      printf '  status:  MISMATCH — expected %s\n\n' "$want" >>"$PROVENANCE"
+      log "FATAL: $name SHA-256 mismatch (expected $want, got $actual)"
+      exit 1
+    fi
+    printf '  status:  verified against the pinned hash\n\n' >>"$PROVENANCE"
+  else
+    printf '  status:  RECORDED ONLY — pin this hash in toolchains.conf\n\n' >>"$PROVENANCE"
+    log "$name: hash recorded, not pinned — see $PROVENANCE"
+  fi
+}
+
+main() {
+  if [[ "$(id -u)" -ne 0 ]]; then
+    echo "provision-toolchains: must run as root" >&2
+    exit 1
+  fi
+  if [[ ! -r "$CONFIG" ]]; then
+    log "$CONFIG not present — no toolchain to provision"
+    exit 0
+  fi
+  # shellcheck disable=SC1090
+  source "$CONFIG"
+
+  mkdir -p "$DEST"
+  {
+    printf '=== provision-toolchains run %s ===\n' "$(date -Is)"
+    printf 'config: %s\n\n' "$CONFIG"
+  } >>"$PROVENANCE"
+
+  local tmp
+  tmp=$(mktemp -d)
+  trap 'rm -rf "$tmp"' EXIT
+
+  if [[ -n "${JDK_URL:-}" ]]; then
+    if [[ -d "$DEST/jdk" ]]; then
+      log "jdk already provisioned — skip"
+    else
+      fetch_verify JDK "$JDK_URL" "$tmp/jdk.tar.gz" "${JDK_SHA256:-}"
+      mkdir -p "$DEST/jdk"
+      tar -xzf "$tmp/jdk.tar.gz" -C "$DEST/jdk" --strip-components=1
+    fi
+  fi
+
+  if [[ -n "${GRADLE_URL:-}" ]]; then
+    if [[ -d "$DEST/gradle" ]]; then
+      log "gradle already provisioned — skip"
+    else
+      fetch_verify Gradle "$GRADLE_URL" "$tmp/gradle.zip" "${GRADLE_SHA256:-}"
+      mkdir -p "$tmp/gx"
+      unzip -q "$tmp/gradle.zip" -d "$tmp/gx"
+      mv "$tmp"/gx/gradle-* "$DEST/gradle"
+    fi
+  fi
+
+  if [[ -n "${KOTLIN_URL:-}" ]]; then
+    if [[ -d "$DEST/kotlinc" ]]; then
+      log "kotlinc already provisioned — skip"
+    else
+      fetch_verify Kotlin "$KOTLIN_URL" "$tmp/kotlin.zip" "${KOTLIN_SHA256:-}"
+      unzip -q "$tmp/kotlin.zip" -d "$DEST"   # archive contains kotlinc/
+    fi
+  fi
+
+  if [[ -n "${ANDROID_CMDLINE_TOOLS_URL:-}" ]]; then
+    if [[ -d "$DEST/android-sdk/cmdline-tools/latest" ]]; then
+      log "android cmdline-tools already provisioned — skip"
+    else
+      fetch_verify "Android cmdline-tools" "$ANDROID_CMDLINE_TOOLS_URL" \
+        "$tmp/cmdline-tools.zip" "${ANDROID_CMDLINE_TOOLS_SHA256:-}"
+      mkdir -p "$DEST/android-sdk/cmdline-tools"
+      unzip -q "$tmp/cmdline-tools.zip" -d "$tmp/ax"   # archive contains cmdline-tools/
+      mv "$tmp/ax/cmdline-tools" "$DEST/android-sdk/cmdline-tools/latest"
+    fi
+  fi
+
+  # sdkmanager packages. sdkmanager verifies its own downloads against the
+  # Google repository manifest, so they are not SHA-pinned here.
+  if [[ -n "${ANDROID_SDK_PACKAGES:-}" && -d "$DEST/android-sdk/cmdline-tools/latest" ]]; then
+    # Point sdkmanager at the provisioned JDK whenever it is present — not
+    # only when this run downloaded it (a re-run with JDK_URL already
+    # satisfied would otherwise leave JAVA_HOME unset).
+    [[ -d "$DEST/jdk" ]] && export JAVA_HOME="$DEST/jdk"
+    export ANDROID_HOME="$DEST/android-sdk"
+    log "sdkmanager: accepting licenses + installing packages ..."
+    yes 2>/dev/null | "$DEST/android-sdk/cmdline-tools/latest/bin/sdkmanager" \
+      --licenses >/dev/null || true
+    # shellcheck disable=SC2086
+    "$DEST/android-sdk/cmdline-tools/latest/bin/sdkmanager" $ANDROID_SDK_PACKAGES
+  fi
+
+  chown -R clawx:clawx "$DEST"
+  log "done — toolchains under $DEST; provenance in $PROVENANCE"
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi
