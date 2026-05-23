@@ -22,10 +22,15 @@ clawx --version
 |--------------|--------------------------------------------------|
 | `claw`       | `clawx prompt "say hello"`                       |
 | `opencode`   | `clawx run "say hello"` (or just `clawx "say hello"`; the wrapper prepends `run`) |
+| `claude`     | `clawx "say hello"` (bare prompt → headless `-p`); bare `clawx` opens the interactive TUI |
 
 The wrapper also rewrites `--model X` so each agent sees its expected
-format: `claw-code` gets the plain model name; `opencode` gets
-`${AGENT_PROVIDER}/${AGENT_MODEL}`.
+format: `claw-code` and `claude` get the plain model name; `opencode` gets
+`${AGENT_PROVIDER}/${AGENT_MODEL}`. On a `claude` image the wrapper rejects
+OpenAI-family providers — Claude Code speaks only the Anthropic protocol —
+and points `ANTHROPIC_BASE_URL` at an in-container query-string proxy
+rather than at the backend directly; see
+[model-providers.md](model-providers.md).
 
 The wrapper requires provider-neutral runtime config for normal model calls:
 
@@ -58,9 +63,33 @@ export CLAWX_CONTAINER=clawx-research
 clawx --version
 ```
 
+## Applying configuration
+
+`clawx setup` pushes operator config into the running stack in one
+idempotent step: it runs `tank-clawx-secrets` (regenerating the secret
+and env Quadlet drop-ins) and restarts the user services that consume
+that config.
+
+Store a secret and apply it in one line — pipe the value on stdin:
+
+```bash
+printf '%s' "$AGENT_API_KEY" | clawx setup agent_api_key
+```
+
+With no argument it just re-applies — use it after editing a config file
+such as `~/.clawx/agent.env` or `scopes.json`:
+
+```bash
+clawx setup
+```
+
+Safe to re-run. It does not configure the egress proxy
+(`/etc/clawx/proxy.env` + `clawx-nftables.service` need root — a separate
+step).
+
 ## Self-test
 
-`clawx doctor` runs a containment self-test. With functional probes — not
+`clawx selftest` runs a containment self-test. With functional probes — not
 rule inspection — it checks that the VM's isolation is in force and the
 runtime is healthy: runtime config, the agent container, agent-binary
 integrity, that direct (non-proxy) egress is blocked, that the egress
@@ -68,13 +97,17 @@ proxy reaches the model host, the read-only instruction file, MCP
 connectivity, and the sidecar containers.
 
 ```bash
-clawx doctor
+clawx selftest
 ```
+
+Earlier releases named this `clawx doctor`; it was renamed to `selftest` so
+that `doctor` passes through to agents with their own `doctor` subcommand
+(Claude Code has one).
 
 Sample output from a healthy opencode VM:
 
 ```text
-clawx doctor — tank-agent-os containment self-test
+clawx selftest — tank-agent-os containment self-test
 container: clawx   agent: opencode
 
   PASS  runtime config: AGENT_PROVIDER / BASE_URL / MODEL set in agent.env

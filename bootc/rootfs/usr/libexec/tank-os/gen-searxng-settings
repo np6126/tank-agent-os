@@ -17,6 +17,10 @@ set -euo pipefail
 #     `sudo systemctl restart clawx-nftables.service` step.
 #
 # Runs as root. Output is root-owned, ro-mounted into the searxng container.
+#
+# Structured so render_settings() can be sourced and unit-tested without
+# root: tools/unit-tests.sh sources this file; the main-guard at the bottom
+# means sourcing defines the functions but runs nothing.
 
 template=/etc/clawx/searxng-settings.yml.template
 target=/etc/clawx/searxng-settings.yml
@@ -32,44 +36,60 @@ trace() {
     [ -f "$log" ] && [ "$(stat -c %s "$log" 2>/dev/null || echo 0)" -gt 102400 ] && : > "$log"
     printf '%s\n' "$*" >> "$log" 2>/dev/null || true
 }
-chmod 0644 "$log" 2>/dev/null || true
 
-trace "=== $(date -Iseconds) pid=$$ ==="
+# Render the settings file on stdout: substitute the proxy placeholder when
+# a proxy URL is given, otherwise emit the template verbatim (placeholder
+# left intact). Pure — unit-testable without root.
+render_settings() {
+    local template_path="$1" proxy_url="$2"
+    if [ -z "$proxy_url" ]; then
+        cat "$template_path"
+    else
+        sed "s|__CLAWX_PROXY_URL__|${proxy_url}|g" "$template_path"
+    fi
+}
 
-if [ ! -r "$template" ]; then
-  trace "$template missing — nothing to do"
-  exit 0
+main() {
+    chmod 0644 "$log" 2>/dev/null || true
+    trace "=== $(date -Iseconds) pid=$$ ==="
+
+    if [ ! -r "$template" ]; then
+        trace "$template missing — nothing to do"
+        exit 0
+    fi
+
+    CLAWX_PROXY_URL=""
+    if [ -r "$proxy_env" ]; then
+        # shellcheck disable=SC1090
+        . "$proxy_env"
+    fi
+    trace "CLAWX_PROXY_URL=${CLAWX_PROXY_URL:-<empty>}"
+
+    if [ -z "${CLAWX_PROXY_URL:-}" ]; then
+        trace "CLAWX_PROXY_URL not set, leaving placeholder"
+    fi
+    render_settings "$template" "${CLAWX_PROXY_URL:-}" > "$tmp"
+    chmod 0644 "$tmp"
+
+    # Idempotency: skip restart when output didn't change.
+    if [ -f "$target" ] && cmp -s "$tmp" "$target"; then
+        rm -f "$tmp"
+        trace "no change, skipping mv+restart"
+        exit 0
+    fi
+    mv "$tmp" "$target"
+    trace "wrote $target size=$(stat -c %s "$target")"
+
+    # Restart user services only if the clawx session is up.
+    if ! loginctl show-user clawx 2>/dev/null | grep -q '^State=active'; then
+        trace "clawx user session not active, skip restart"
+        exit 0
+    fi
+    trace "restarting user searxng + mcp-searxng"
+    runuser -u clawx -- env XDG_RUNTIME_DIR=/run/user/1000 \
+        systemctl --user restart searxng.service mcp-searxng.service 2>>"$log" || true
+}
+
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+    main "$@"
 fi
-
-CLAWX_PROXY_URL=""
-if [ -r "$proxy_env" ]; then
-  # shellcheck disable=SC1090
-  . "$proxy_env"
-fi
-trace "CLAWX_PROXY_URL=${CLAWX_PROXY_URL:-<empty>}"
-
-if [ -z "${CLAWX_PROXY_URL:-}" ]; then
-  trace "CLAWX_PROXY_URL not set, leaving placeholder"
-  cp "$template" "$tmp"
-else
-  sed "s|__CLAWX_PROXY_URL__|${CLAWX_PROXY_URL}|g" "$template" > "$tmp"
-fi
-chmod 0644 "$tmp"
-
-# Idempotency: skip restart when output didn't change.
-if [ -f "$target" ] && cmp -s "$tmp" "$target"; then
-  rm -f "$tmp"
-  trace "no change, skipping mv+restart"
-  exit 0
-fi
-mv "$tmp" "$target"
-trace "wrote $target size=$(stat -c %s "$target")"
-
-# Restart user services only if the clawx session is up.
-if ! loginctl show-user clawx 2>/dev/null | grep -q '^State=active'; then
-  trace "clawx user session not active, skip restart"
-  exit 0
-fi
-trace "restarting user searxng + mcp-searxng"
-runuser -u clawx -- env XDG_RUNTIME_DIR=/run/user/1000 \
-  systemctl --user restart searxng.service mcp-searxng.service 2>>"$log" || true

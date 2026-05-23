@@ -127,8 +127,9 @@ Volume=/etc/clawx/CLAUDE.md:/home/clawx/CLAUDE.md:ro
 Volume=/etc/clawx/CLAUDE.md:/home/clawx/AGENTS.md:ro
 ```
 
-`claw-code` reads `CLAUDE.md`; `opencode` reads `AGENTS.md`. Both agents
-discover the file by traversing upward from the working directory
+`claw-code` and Claude Code read `CLAUDE.md`; `opencode` reads `AGENTS.md`.
+All three agents discover the file by traversing upward from the working
+directory
 (`/home/clawx/workspaces`), so it is loaded automatically into the system
 prompt on every invocation without any wrapper changes. Because the source
 file is root-owned on the host and mounted read-only into the container, the
@@ -221,6 +222,7 @@ matching SHA-256 ARG. There is no runtime pull of the agent binary.
 |--------------|-------------------------|---------------------------------------|
 | `claw`       | Git commit + 5 patches  | SHA-256 of locally built binary       |
 | `opencode`   | Release tag + asset name| SHA-256 of upstream tarball + binary  |
+| `claude`     | Release version + platform | GPG signature over the release manifest, then SHA-256 of the binary |
 
 For `AGENT_KIND=opencode` there is one further input to pin:
 `@opencode-ai/plugin`, opencode's plugin SDK. opencode tries to
@@ -346,6 +348,16 @@ SDK version must match the binary version — opencode pins it that way
 internally), then rebuild. The same audited path as any other pinned
 component.
 
+**Claude Code** ships both an auto-updater and non-essential network
+traffic (telemetry, error reporting). On a `claude` image three layers
+disable them. The agent binary is mounted read-only, so an in-place update
+cannot land. `clawx.container` sets the documented kill-switch environment
+variables — `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`,
+`DISABLE_AUTOUPDATER`, `DISABLE_UPDATES`, `DISABLE_TELEMETRY`,
+`DISABLE_ERROR_REPORTING`, `DISABLE_FEEDBACK_COMMAND`, `DO_NOT_TRACK` — and
+the same `env` block is repeated in the root-owned `managed-settings.json`
+(below). The egress allowlist excludes the update and telemetry hosts.
+
 ### Agent-Internal Permission Models
 
 opencode (and to a lesser extent claw-code) ships with its own permission
@@ -364,6 +376,15 @@ process. tank-agent-os intentionally relaxes some of these — specifically
   files) is the load-bearing defense and is **not** weakened by the
   in-process permission relaxation. The agent can read `/etc`, `/usr`,
   etc., which are part of the OS image anyway and contain no secrets.
+
+The same reasoning covers Claude Code on a `claude` image. Its root-owned
+`managed-settings.json` — mounted at `/etc/claude-code/managed-settings.json`,
+the highest-precedence settings layer, not writable from inside the
+container — sets `permissions.defaultMode: bypassPermissions`, and the
+wrapper passes `--permission-mode bypassPermissions` on headless runs as a
+fallback for the case where that mount is ever absent. Claude Code refuses
+`bypassPermissions` when running as root; the agent runs as uid 1000, so it
+is permitted.
 
 In other words: tank-agent-os treats the agent's internal ACL as a
 session-UX feature, not as a security boundary. The container is the
@@ -385,7 +406,8 @@ boundary.
 | Reach external search engines directly | No — even with the opt-in SearXNG stack enabled, the agent talks to `mcp-searxng` on the bridge; only SearXNG itself has egress, and only through the same proxy/allowlist as the agent |
 | Reach external documentation hosts directly | No — even with the opt-in docs-mcp stack enabled, the agent talks to `docs-mcp` on the bridge; only docs-mcp's scraper has egress, and only through the same proxy/allowlist as the agent |
 | Use the llm-wiki knowledge base | Yes — opt-in, always operator-enabled; the agent talks to `llm-wiki` on the bridge. Only the `llm-wiki` container has egress, to the git host only, through the same proxy/allowlist as the agent. Wiki page content is treated as data, not instructions (see `CLAUDE.md`); the server strips known injection patterns on write. See [docs/llm-wiki.md](../docs/llm-wiki.md). |
-| Add or override MCP servers via workspace config | No — both agents load only their baked, root-owned MCP config. opencode's project-config discovery is disabled (`OPENCODE_DISABLE_PROJECT_CONFIG=1`); claw-code is patched to honour only User-scope config (`claw-lock-project-config.patch`). Without this, a settings file (`opencode.json` / `.claw/settings.json`) in the writable `~/workspaces` mount — a cloned repo, or a prompt-injected self-write — could inject a new MCP server or shadow a trusted one such as `service-gator`. The blast radius would still be bounded by the proxy / nftables / `scopes.json` controls, but the baked config is the trust anchor for the MCP set. |
+| Add or override MCP servers via workspace config | No — every agent loads only its baked, root-owned MCP config. opencode's project-config discovery is disabled (`OPENCODE_DISABLE_PROJECT_CONFIG=1`); claw-code is patched to honour only User-scope config (`claw-lock-project-config.patch`); Claude Code is invoked with `--mcp-config` + `--strict-mcp-config`, which ignores every other MCP source including a workspace `.mcp.json`. Without these, a settings file (`opencode.json` / `.claw/settings.json` / `.mcp.json`) in the writable `~/workspaces` mount — a cloned repo, or a prompt-injected self-write — could inject a new MCP server or shadow a trusted one such as `service-gator`. The blast radius would still be bounded by the proxy / nftables / `scopes.json` controls, but the baked config is the trust anchor for the MCP set. |
+| Run code via workspace-scoped agent config (`claude`) | No — Claude Code is invoked with `--setting-sources user`, so only the user and (always-on, root-owned) managed settings layers load. A `.claude/settings.json` placed in the writable `~/workspaces` mount is a `project`/`local` source and is not read, so a `SessionStart` hook it defines — which would run shell code at agent start — does not fire. `claw` and `opencode` have no comparable lifecycle-hook mechanism. |
 | Modify Quadlet drop-in files | No — those directories are not mounted into the container |
 | Write to its own config (`~/.clawx/`) | Yes — required for agent runtime state; opencode's XDG paths are redirected here via `XDG_*_HOME` env vars so the agent stays inside this single writable mount |
 | Write to the workspace (`~/workspaces/`) | Yes — this is the intended working area |

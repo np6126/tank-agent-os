@@ -1,4 +1,4 @@
-# SearXNG settings for tank-claw-os. Mounted read-only into the searxng
+# SearXNG settings for tank-agent-os. Mounted read-only into the searxng
 # container at /etc/searxng/settings.yml. Hardened defaults for a
 # single-user, MCP-backend deployment behind the egress proxy.
 #
@@ -43,7 +43,7 @@ outgoing:
 
 general:
   debug: false
-  instance_name: "tank-claw-os search"
+  instance_name: "tank-agent-os search"
   contact_url: false
   enable_metrics: false
 
@@ -59,7 +59,7 @@ server:
   base_url: "http://searxng:8080/"
   port: 8080
   bind_address: "0.0.0.0"
-  secret_key: "tank-claw-os-searxng-not-multi-user"
+  secret_key: "tank-agent-os-searxng-not-multi-user"
   limiter: false
   image_proxy: false
   http_protocol_version: "1.1"

@@ -1,0 +1,91 @@
+#!/bin/bash
+# clawx setup — apply operator config to the running stack, idempotently.
+#
+# Usage:
+#   clawx setup                         apply: tank-clawx-secrets + restart
+#   printf '%s' "$VALUE" | clawx setup <secret-name>
+#                                       create/replace the named Podman secret
+#                                       from stdin, then apply
+#
+# "Apply" runs tank-clawx-secrets (regenerates the secret/env Quadlet
+# drop-ins) and restarts the user services that consume operator config.
+# Safe to re-run. It does not touch the egress proxy (proxy.env +
+# clawx-nftables.service need root — a separate step) or skills (no
+# restart needed).
+set -uo pipefail
+
+# Structured so the pure helpers (usage, is_known_secret) can be sourced
+# and unit-tested: tools/unit-tests.sh sources this file; the main-guard at
+# the bottom means sourcing defines the functions but runs nothing.
+
+# Recognised operator secrets — a typo guard, not an allowlist.
+KNOWN_SECRETS=" agent_api_key openai_api_key anthropic_api_key claude_code_oauth_token \
+openrouter_api_key model_endpoint_api_key gh_token gitlab_token forgejo_token \
+jira_api_token proxy_url proxy_ca_cert llm_wiki_token registry_user registry_password "
+
+# Print the usage block — the header comment down to the `set -` line.
+usage() {
+  sed -n '2,/^set -/{ /^set -/d; s/^# \{0,1\}//; p }' "$0"
+}
+
+# is_known_secret NAME -> 0 if NAME is a recognised operator secret.
+is_known_secret() {
+  case "$KNOWN_SECRETS" in
+    *" $1 "*) return 0 ;;
+    *)        return 1 ;;
+  esac
+}
+
+main() {
+  export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+  export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}"
+
+  case "${1:-}" in
+    -h|--help)
+      usage
+      exit 0 ;;
+  esac
+
+  if [[ $# -gt 1 ]]; then
+    echo "clawx setup: too many arguments — expected at most one secret name" >&2
+    exit 2
+  fi
+  local secret_name="${1:-}"
+
+  if [[ -n "$secret_name" ]]; then
+    if [[ -t 0 ]]; then
+      echo "clawx setup: pipe the secret value on stdin, e.g.:" >&2
+      echo "  printf '%s' \"\$KEY\" | clawx setup $secret_name" >&2
+      exit 2
+    fi
+    if ! is_known_secret "$secret_name"; then
+      echo "clawx setup: note — '$secret_name' is not a recognised secret name; storing it anyway." >&2
+    fi
+    # create-or-replace: rm-then-create works on every podman version
+    podman secret rm "$secret_name" >/dev/null 2>&1 || true
+    if podman secret create "$secret_name" - ; then
+      echo "stored secret: $secret_name"
+    else
+      echo "clawx setup: could not store secret '$secret_name'" >&2
+      exit 1
+    fi
+  fi
+
+  echo "applying operator config ..."
+  tank-clawx-secrets || { echo "clawx setup: tank-clawx-secrets failed" >&2; exit 1; }
+
+  local restarted=()
+  local unit
+  for unit in clawx.service service-gator.service searxng.service \
+              mcp-searxng.service docs-mcp.service llm-wiki.service; do
+    if systemctl --user is-active --quiet "$unit"; then
+      systemctl --user restart "$unit" && restarted+=("$unit")
+    fi
+  done
+  echo "restarted: ${restarted[*]:-(none were active)}"
+  echo "clawx setup: done."
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi
