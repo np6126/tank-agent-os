@@ -31,6 +31,21 @@ Environment=SEARXNG_URL=http://searxng:8080
 # starts the HTTP transport on /mcp (the path opencode connects to).
 Environment=MCP_HTTP_PORT=3000
 Exec=/usr/local/bin/mcp-searxng
+# Health probe — marks the container healthy once the MCP HTTP server has
+# bound its port. A bare TCP connect is the readiness signal that matters
+# here (the [Unit] comment above notes there is otherwise none) and avoids
+# the Streamable-HTTP semantics where a GET on /mcp opens a long-lived SSE
+# stream instead of returning. These images carry no common probe tool, so
+# each uses its guaranteed runtime — here `node`, which is what mcp-searxng
+# itself runs. HealthOnFailure=kill turns a wedged server (process up, port
+# dead) into a container exit; Restart=on-failure below recreates it,
+# rate-limited by StartLimit* in [Unit].
+HealthCmd=node -e "const s=require('net').connect(3000,'127.0.0.1');s.setTimeout(5000);s.on('connect',()=>process.exit(0));s.on('error',()=>process.exit(1));s.on('timeout',()=>process.exit(1))"
+HealthInterval=30s
+HealthTimeout=10s
+HealthRetries=3
+HealthStartPeriod=30s
+HealthOnFailure=kill
 
 [Service]
 TimeoutStartSec=120

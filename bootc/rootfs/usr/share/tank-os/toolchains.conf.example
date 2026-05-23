@@ -1,0 +1,40 @@
+# tank-agent-os — operator toolchain provisioning config (EXAMPLE).
+#
+# Copy to /etc/clawx/toolchains.conf (typically via a cloud-init write_files
+# block) and have the cloud-init runcmd call:
+#     /usr/libexec/tank-os/provision-toolchains
+#
+# It downloads each artifact below into the agent's writable ~/.clawx/
+# toolchains mount. The clawx-runtime image ships JAVA_HOME / ANDROID_HOME /
+# GRADLE_USER_HOME / PATH pointing at that location already — the toolchain
+# itself is NOT baked into any image.
+#
+# Hash pinning: each *_SHA256 is pinned for the version in the matching
+# *_URL, and provision-toolchains aborts on any mismatch. To change a
+# version, blank that *_SHA256 and run provision-toolchains once — it records
+# the downloaded artifact's verified hash to ~/.clawx/toolchains/
+# PROVENANCE.txt; copy that hash back here to re-pin.
+#
+# Each artifact is optional: leave a *_URL empty to skip that tool. The URLs
+# and hashes below are linux/amd64 — adjust both for another architecture.
+
+# --- JDK (Adoptium Temurin) — extracted to ~/.clawx/toolchains/jdk ----------
+JDK_URL="https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.5%2B11/OpenJDK21U-jdk_x64_linux_hotspot_21.0.5_11.tar.gz"
+JDK_SHA256="3c654d98404c073b8a7e66bffb27f4ae3e7ede47d13284c132d40a83144bfd8c"
+
+# --- Gradle — extracted to ~/.clawx/toolchains/gradle ----------------------
+GRADLE_URL="https://services.gradle.org/distributions/gradle-8.13-bin.zip"
+GRADLE_SHA256="20f1b1176237254a6fc204d8434196fa11a4cfb387567519c61556e8710aed78"
+
+# --- Kotlin compiler — extracted to ~/.clawx/toolchains/kotlinc ------------
+KOTLIN_URL="https://github.com/JetBrains/kotlin/releases/download/v2.1.21/kotlin-compiler-2.1.21.zip"
+KOTLIN_SHA256="1ba08a8b45da99339a0601134cc037b54cf85e9bc0edbe76dcbd27c2d684a977"
+
+# --- Android command-line tools — to ~/.clawx/toolchains/android-sdk -------
+ANDROID_CMDLINE_TOOLS_URL="https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
+ANDROID_CMDLINE_TOOLS_SHA256="2d2d50857e4eb553af5a6dc3ad507a17adf43d115264b1afc116f95c92e5e258"
+
+# Space-separated sdkmanager package specs to install after the command-line
+# tools are in place. sdkmanager verifies these against Google's repository
+# manifest itself. Leave empty to skip the sdkmanager step.
+ANDROID_SDK_PACKAGES="platform-tools build-tools;35.0.0 platforms;android-35"

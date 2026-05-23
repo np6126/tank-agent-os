@@ -1,6 +1,12 @@
 [Unit]
 Description=service-gator scoped service MCP server (rootless Podman)
 After=network-online.target
+# service-gator gains a HealthOnFailure=kill probe (see [Container]): a
+# persistently-unhealthy container is killed and then restarted by
+# Restart=on-failure. Widen the restart-rate window so that loop is bounded,
+# matching searxng / mcp-searxng / docs-mcp / llm-wiki.
+StartLimitBurst=10
+StartLimitIntervalSec=300
 
 [Container]
 Image=ghcr.io/cgwalters/service-gator:placeholder
@@ -19,12 +25,29 @@ Environment=GITLAB_TOKEN_FILE=/run/secrets/gitlab_token
 Environment=FORGEJO_TOKEN_FILE=/run/secrets/forgejo_token
 Environment=JIRA_API_TOKEN_FILE=/run/secrets/jira_api_token
 Exec=--mcp-server 0.0.0.0:8080 --scope-file /etc/service-gator/scopes.json
+# Health probe — see mcp-searxng.container for the full rationale. The
+# UBI10-minimal image ships no node/python, but it has bash, and bash's
+# /dev/tcp opens the TCP connect with no extra probe tool (the explicit
+# `bash -c` wrapper means this does not depend on what /bin/sh is).
+# HealthOnFailure=kill + Restart=on-failure recreate a wedged container;
+# the StartLimit* added in [Unit] bounds that loop, matching the other
+# MCP containers.
+HealthCmd=bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080'
+HealthInterval=30s
+HealthTimeout=10s
+HealthRetries=3
+HealthStartPeriod=30s
+HealthOnFailure=kill
 
 [Service]
 ExecStartPre=/usr/libexec/tank-os/bootstrap-clawx
 ExecStartPre=/usr/libexec/tank-os/bootstrap-service-gator
 TimeoutStartSec=300
 Restart=on-failure
+# Space out restarts (default is ~100ms) so the HealthOnFailure kill/restart
+# cycle plays nicely with StartLimit* in [Unit] — same as the other MCP
+# containers.
+RestartSec=10s
 
 [Install]
 WantedBy=default.target

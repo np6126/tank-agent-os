@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# clawx doctor — containment and functionality self-test for tank-agent-os.
+# clawx selftest — containment and functionality self-test for tank-agent-os.
 #
 # Verifies — with functional probes, not rule inspection — that the agent
 # VM's containment is actually in force and the runtime is healthy. Runs
@@ -33,7 +33,7 @@ cexec() { podman exec "$container_name" "$@"; }
 agent_kind="unknown"
 [[ -r /etc/clawx/agent.kind ]] && agent_kind=$(tr -d '[:space:]' < /etc/clawx/agent.kind)
 
-echo "clawx doctor — tank-agent-os containment self-test"
+echo "clawx selftest — tank-agent-os containment self-test"
 echo "container: ${container_name}   agent: ${agent_kind}"
 echo
 

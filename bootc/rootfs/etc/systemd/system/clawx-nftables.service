@@ -1,6 +1,5 @@
 [Unit]
 Description=Network isolation rules for clawx agent container
-Documentation=https://github.com/ultraworkers/tank-claw-os
 After=network-online.target nftables.service
 Before=user@1000.service
 Wants=network-online.target nftables.service

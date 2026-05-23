@@ -1,8 +1,15 @@
 #!/usr/bin/env bash
+# clawx — host-side wrapper. Delegates into the running rootless clawx
+# container and invokes the pinned agent binary at /usr/local/bin/agent,
+# shaping argv to the conventions of the agent the image was built with.
+#
+# Structured so the pure helpers (build_cli_args, require_supported_provider,
+# anthropic_base_url_for) can be sourced and unit-tested: tools/
+# unit-tests.sh sources this file; the main-guard at the bottom means
+# sourcing defines the functions but runs nothing. main() carries the
+# side-effecting flow (privilege delegation, container probing, env-file
+# loading, the final exec) and is intentionally kept out of the helpers.
 set -euo pipefail
-
-container_name="${CLAWX_CONTAINER:-clawx}"
-args=()
 
 config_error() {
   cat >&2 <<'MSG'
@@ -38,155 +45,318 @@ load_env_file() {
   fi
 }
 
-while (($# > 0)); do
-  case "$1" in
-    --container)
-      if (($# < 2)); then
-        echo "Missing value for --container." >&2
-        exit 2
-      fi
-      container_name="$2"
-      shift 2
+# require_supported_provider AGENT_KIND AGENT_PROVIDER
+# Returns 0 if the provider is usable with the agent, 2 otherwise (with a
+# message on stderr). Claude Code speaks only the Anthropic Messages
+# protocol — it cannot reach OpenAI-compatible backends; claw and opencode
+# accept every provider. Pure: depends only on its arguments.
+require_supported_provider() {
+  local kind="$1" provider="$2"
+  [[ "$kind" == "claude" ]] || return 0
+  case "$provider" in
+    anthropic|custom-anthropic-compatible)
+      return 0 ;;
+    *)
+      echo "Error: AGENT_KIND=claude speaks only the Anthropic protocol." >&2
+      echo "AGENT_PROVIDER=$provider (OpenAI family) is not supported." >&2
+      echo "Use anthropic or custom-anthropic-compatible — see docs/model-providers.md." >&2
+      return 2 ;;
+  esac
+}
+
+# anthropic_base_url_for AGENT_KIND AGENT_PROVIDER BACKEND_URL
+# Echoes the ANTHROPIC_BASE_URL the agent process should see. Claude Code
+# appends ?beta=true to /v1/messages, which hangs an Ollama backend
+# (claude-code issue #51239); a claude image on a custom-anthropic-compatible
+# backend is therefore routed through the in-container anthropic-strip-proxy,
+# which deletes the query string. The real Anthropic API (AGENT_PROVIDER=
+# anthropic) handles the parameter itself and is reached directly, as are
+# claw and opencode (which never append it). Pure: depends only on its
+# arguments — the side-effecting proxy startup is in main().
+anthropic_base_url_for() {
+  local kind="$1" provider="$2" backend="$3"
+  if [[ "$kind" == "claude" && "$provider" == "custom-anthropic-compatible" ]]; then
+    echo "http://127.0.0.1:8765"
+  else
+    echo "$backend"
+  fi
+}
+
+# build_cli_args AGENT_KIND AGENT_MODEL [user args...]
+# Sets the global array `cli_args` to the argv for /usr/local/bin/agent.
+# Pure: depends only on its arguments. Returns 2 for an unknown agent kind.
+# This is the per-agent CLI-shape contract — keep it behaviour-identical
+# and covered by tools/unit-tests.sh. In particular the claude branch must
+# always carry --strict-mcp-config and --setting-sources user; those are
+# the project-config injection guardrails (see docs/security.md).
+build_cli_args() {
+  local kind="$1" model="$2"
+  shift 2
+  local args=("$@")
+
+  case "$kind" in
+    claw)
+      cli_args=(--model "$model" "${args[@]}")
       ;;
-    --container=*)
-      container_name="${1#--container=}"
-      shift
+    opencode)
+      # opencode uses `provider/model` from its config-defined providers. We
+      # hard-code the provider id to `agent` to avoid collisions with
+      # opencode's built-in registry (ollama/openai/etc.) — gen-opencode-config
+      # writes a matching custom-provider entry with the operator's
+      # AGENT_BASE_URL. Strip the claw-specific `local/` prefix so the same
+      # agent.env works with both agents (claw does the equivalent in
+      # wire_model_for_base_url).
+      local model_arg=(--model "agent/${model#local/}")
+      case "${args[0]:-}" in
+        '')
+          # No args → opencode's default TUI mode with the configured model.
+          cli_args=("${model_arg[@]}")
+          ;;
+        run)
+          cli_args=(run "${model_arg[@]}" "${args[@]:1}")
+          ;;
+        # opencode subcommands passed through verbatim — everything else is
+        # treated as a bare prompt. Synced against the opencode release pinned
+        # by OPENCODE_REF in bootc/Containerfile; re-check when bumping opencode.
+        serve|web|agent|auth|providers|models|tui|mcp|plugin|plug|session|github|pr|stats|debug|attach|upgrade|completion|--*)
+          cli_args=("${args[@]}")
+          ;;
+        *)
+          # Bare prompt args → `run` subcommand for one-shot ergonomics.
+          cli_args=(run "${model_arg[@]}" "${args[@]}")
+          ;;
+      esac
+      ;;
+    claude)
+      # Pass the model bare; strip the claw-specific `local/` prefix so the
+      # same agent.env works for all three agents (claw does the equivalent
+      # in wire_model_for_base_url).
+      local model_arg=(--model "${model#local/}")
+      # Hardening flags applied to interactive and headless runs:
+      #  --mcp-config + --strict-mcp-config — use only the root-owned MCP set,
+      #    ignoring any .mcp.json a cloned repo brings into the workspace.
+      #  --setting-sources user — load only the user and (always-on) managed
+      #    settings layers, never project/local. A .claude/settings.json in
+      #    the writable workspace therefore cannot inject hooks (SessionStart
+      #    hooks are code execution at agent start). CLAUDE.md is a separate
+      #    subsystem and is unaffected.
+      local hardening_args=(--mcp-config /etc/clawx/claude-mcp.json --strict-mcp-config
+                            --setting-sources user)
+      # --permission-mode bypassPermissions is redundant with the managed
+      # settings (defaultMode), but set deliberately on headless runs: if the
+      # managed-settings mount ever fails, a headless run would otherwise
+      # stall on the first permission prompt. Same belt-and-braces logic as
+      # the telemetry vars in clawx.container.
+      case "${args[0]:-}" in
+        '')
+          # No args → interactive TUI with the configured model pre-selected.
+          cli_args=("${model_arg[@]}" "${hardening_args[@]}")
+          ;;
+        -p|--print)
+          cli_args=("${args[0]}" "${model_arg[@]}" "${hardening_args[@]}"
+                    --permission-mode bypassPermissions "${args[@]:1}")
+          ;;
+        # Real claude subcommands pass through verbatim. Synced against the CLI
+        # reference for the pinned CLAUDE_CODE_REF — re-check when bumping it.
+        mcp|config|doctor|update|install|setup-token|auth|agents|plugin|plugins|project|attach|respawn|daemon|logs|auto-mode|remote-control|ultrareview|rm|stop|kill|--*)
+          cli_args=("${args[@]}")
+          ;;
+        *)
+          # Bare prompt args → headless `-p` for one-shot ergonomics.
+          cli_args=(-p "${model_arg[@]}" "${hardening_args[@]}"
+                    --permission-mode bypassPermissions "${args[@]}")
+          ;;
+      esac
       ;;
     *)
-      args+=("$1")
-      shift
+      echo "Error: unsupported agent kind in /etc/clawx/agent.kind: $kind" >&2
+      return 2
       ;;
   esac
-done
+}
 
-if [[ "$(id -un)" != "clawx" ]]; then
-  if ! command -v sudo >/dev/null 2>&1; then
-    echo "Run as clawx, or install sudo so this wrapper can delegate to the clawx user." >&2
-    exit 1
-  fi
-  exec sudo -iu clawx -- /usr/local/bin/clawx --container "$container_name" "${args[@]}"
-fi
+main() {
+  local container_name="${CLAWX_CONTAINER:-clawx}"
+  local args=()
 
-# `clawx doctor` runs the containment self-test. Intercept it before the
-# container-running check below — diagnosing a stopped container is one
-# of the things doctor is for.
-if [[ "${args[0]:-}" == "doctor" ]]; then
-  exec /usr/libexec/tank-os/clawx-doctor --container "$container_name"
-fi
-
-if ! podman inspect --format '{{.State.Running}}' "$container_name" 2>/dev/null | grep -qx true; then
-  echo "agent container '$container_name' is not running." >&2
-  echo "Try: systemctl --user start clawx.service" >&2
-  exit 1
-fi
-
-agent_kind="claw"
-if [[ -r /etc/clawx/agent.kind ]]; then
-  agent_kind=$(tr -d '[:space:]' < /etc/clawx/agent.kind)
-fi
-
-exec_args=(exec --user 1000:1000)
-if [[ -t 0 && -t 1 ]]; then
-  exec_args+=(-it)
-else
-  exec_args+=(-i)
-fi
-
-case "${args[0]:-}" in
-  -h|--help|help|-V|--version|version)
-    exec podman "${exec_args[@]}" \
-      -w /home/clawx/workspaces \
-      "$container_name" \
-      /usr/local/bin/agent "${args[@]}"
-    ;;
-esac
-
-for name in AGENT_PROVIDER AGENT_BASE_URL AGENT_MODEL; do
-  if [[ -v "$name" ]]; then
-    export "__TANK_ORIG_${name}_SET=1"
-    export "__TANK_ORIG_${name}=${!name}"
-  else
-    export "__TANK_ORIG_${name}_SET=0"
-    export "__TANK_ORIG_${name}="
-  fi
-done
-
-load_env_file "$HOME/.clawx/agent.env"
-load_env_file "/run/agent/config.env"
-if [[ -n "${AGENT_CONFIG:-}" ]]; then
-  load_env_file "$AGENT_CONFIG"
-fi
-
-for name in AGENT_PROVIDER AGENT_BASE_URL AGENT_MODEL; do
-  restore_env_value "$name"
-done
-
-if [[ -z "${AGENT_PROVIDER:-}" || -z "${AGENT_BASE_URL:-}" || -z "${AGENT_MODEL:-}" ]]; then
-  config_error
-fi
-
-_existing_openai_key=$(podman exec "$container_name" printenv OPENAI_API_KEY 2>/dev/null || true)
-
-case "$AGENT_PROVIDER" in
-  ollama|lmstudio|openrouter|openai|custom-openai-compatible)
-    provider_env=(
-      -e "OPENAI_BASE_URL=$AGENT_BASE_URL"
-      -e "OPENAI_API_KEY=${_existing_openai_key:-dummy}"
-    )
-    ;;
-  anthropic|custom-anthropic-compatible)
-    provider_env=(
-      -e "ANTHROPIC_BASE_URL=$AGENT_BASE_URL"
-    )
-    ;;
-  *)
-    echo "Error: unknown AGENT_PROVIDER: $AGENT_PROVIDER" >&2
-    echo "Supported: ollama, lmstudio, openrouter, openai, anthropic, custom-openai-compatible, custom-anthropic-compatible" >&2
-    exit 2
-    ;;
-esac
-
-case "$agent_kind" in
-  claw)
-    cli_args=(--model "$AGENT_MODEL" "${args[@]}")
-    ;;
-  opencode)
-    # opencode uses `provider/model` from its config-defined providers. We
-    # hard-code the provider id to `agent` to avoid collisions with opencode's
-    # built-in registry (ollama/openai/etc.) — gen-opencode-config writes a
-    # matching custom-provider entry with the operator's AGENT_BASE_URL.
-    # Strip the claw-specific `local/` prefix so the same agent.env works
-    # with both agents (claw does the equivalent in wire_model_for_base_url).
-    model_arg=(--model "agent/${AGENT_MODEL#local/}")
-    case "${args[0]:-}" in
-      '')
-        # No args → opencode's default TUI mode (interactive agent console)
-        # with the configured model pre-selected.
-        cli_args=("${model_arg[@]}")
+  while (($# > 0)); do
+    case "$1" in
+      --container)
+        if (($# < 2)); then
+          echo "Missing value for --container." >&2
+          exit 2
+        fi
+        container_name="$2"
+        shift 2
         ;;
-      run)
-        cli_args=(run "${model_arg[@]}" "${args[@]:1}")
-        ;;
-      serve|web|agent|auth|providers|models|tui|mcp|plugin|plug|session|github|pr|stats|debug|attach|upgrade|completion|--*)
-        cli_args=("${args[@]}")
+      --container=*)
+        container_name="${1#--container=}"
+        shift
         ;;
       *)
-        # Bare prompt args → `run` subcommand for one-shot ergonomics.
-        cli_args=(run "${model_arg[@]}" "${args[@]}")
+        args+=("$1")
+        shift
         ;;
     esac
-    ;;
-  *)
-    echo "Error: unsupported agent kind in /etc/clawx/agent.kind: $agent_kind" >&2
-    exit 2
-    ;;
-esac
+  done
 
-exec podman "${exec_args[@]}" \
-  -e "AGENT_PROVIDER=$AGENT_PROVIDER" \
-  -e "AGENT_BASE_URL=$AGENT_BASE_URL" \
-  -e "AGENT_MODEL=$AGENT_MODEL" \
-  "${provider_env[@]}" \
-  -w /home/clawx/workspaces \
-  "$container_name" \
-  /usr/local/bin/agent "${cli_args[@]}"
+  if [[ "$(id -un)" != "clawx" ]]; then
+    if ! command -v sudo >/dev/null 2>&1; then
+      echo "Run as clawx, or install sudo so this wrapper can delegate to the clawx user." >&2
+      exit 1
+    fi
+    exec sudo -iu clawx -- /usr/local/bin/clawx --container "$container_name" "${args[@]}"
+  fi
+
+  # `clawx selftest` runs the containment self-test. Intercept it before the
+  # container-running check below — diagnosing a stopped container is one of
+  # the things selftest is for. The token is `selftest`, not `doctor`, so that
+  # Claude Code's own `doctor` subcommand can pass through to the agent.
+  if [[ "${args[0]:-}" == "selftest" ]]; then
+    exec /usr/libexec/tank-os/clawx-selftest --container "$container_name"
+  fi
+
+  # `clawx setup` applies operator config (secrets, agent.env, scopes.json) to
+  # the running stack. Also before the container-running check — first-boot
+  # setup runs while the container may still be down.
+  if [[ "${args[0]:-}" == "setup" ]]; then
+    exec /usr/libexec/tank-os/clawx-setup "${args[@]:1}"
+  fi
+
+  if ! podman inspect --format '{{.State.Running}}' "$container_name" 2>/dev/null | grep -qx true; then
+    echo "agent container '$container_name' is not running." >&2
+    echo "Try: systemctl --user start clawx.service" >&2
+    exit 1
+  fi
+
+  # Default to "unknown" — a built image always ships /etc/clawx/agent.kind, so
+  # this only fires on a corrupt image, where failing loud (the *) arm in
+  # build_cli_args) beats silently assuming an agent. Matches clawx-selftest.
+  local agent_kind="unknown"
+  if [[ -r /etc/clawx/agent.kind ]]; then
+    agent_kind=$(tr -d '[:space:]' < /etc/clawx/agent.kind)
+  fi
+
+  local exec_args=(exec --user 1000:1000)
+  if [[ -t 0 && -t 1 ]]; then
+    exec_args+=(-it)
+  else
+    exec_args+=(-i)
+  fi
+
+  case "${args[0]:-}" in
+    -h|--help|help|-V|--version|version)
+      exec podman "${exec_args[@]}" \
+        -w /home/clawx/workspaces \
+        "$container_name" \
+        /usr/local/bin/agent "${args[@]}"
+      ;;
+  esac
+
+  local name
+  for name in AGENT_PROVIDER AGENT_BASE_URL AGENT_MODEL; do
+    if [[ -v "$name" ]]; then
+      export "__TANK_ORIG_${name}_SET=1"
+      export "__TANK_ORIG_${name}=${!name}"
+    else
+      export "__TANK_ORIG_${name}_SET=0"
+      export "__TANK_ORIG_${name}="
+    fi
+  done
+
+  load_env_file "$HOME/.clawx/agent.env"
+  load_env_file "/run/agent/config.env"
+  if [[ -n "${AGENT_CONFIG:-}" ]]; then
+    load_env_file "$AGENT_CONFIG"
+  fi
+
+  for name in AGENT_PROVIDER AGENT_BASE_URL AGENT_MODEL; do
+    restore_env_value "$name"
+  done
+
+  if [[ -z "${AGENT_PROVIDER:-}" || -z "${AGENT_BASE_URL:-}" || -z "${AGENT_MODEL:-}" ]]; then
+    config_error
+  fi
+
+  local provider_env
+  case "$AGENT_PROVIDER" in
+    ollama|lmstudio|openrouter|openai|custom-openai-compatible)
+      # Reuse the OPENAI_API_KEY already in the container (injected as a podman
+      # secret) so the wrapper does not override it; fall back to a dummy for
+      # keyless local providers, which still need the var set. The probe stays
+      # arm-local — the anthropic arm below does the equivalent for claude.
+      local _existing_openai_key
+      _existing_openai_key=$(podman exec "$container_name" printenv OPENAI_API_KEY 2>/dev/null || true)
+      provider_env=(
+        -e "OPENAI_BASE_URL=$AGENT_BASE_URL"
+        -e "OPENAI_API_KEY=${_existing_openai_key:-dummy}"
+      )
+      ;;
+    anthropic|custom-anthropic-compatible)
+      # Claude Code refuses to start without a credential, even against a
+      # keyless local backend that ignores its value. If the operator
+      # provisioned no Anthropic auth secret, inject a dummy — the same
+      # keyless-local-provider fallback the openai-family arm applies above. A
+      # real ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN / CLAUDE_CODE_OAUTH_TOKEN
+      # from a podman secret is left as-is, never shadowed by the dummy.
+      local _has_anthropic_auth
+      _has_anthropic_auth=$(podman exec "$container_name" sh -c 'printenv ANTHROPIC_API_KEY >/dev/null || printenv ANTHROPIC_AUTH_TOKEN >/dev/null || printenv CLAUDE_CODE_OAUTH_TOKEN >/dev/null && echo yes' 2>/dev/null || true)
+      provider_env=(
+        -e "ANTHROPIC_BASE_URL=$(anthropic_base_url_for "$agent_kind" "$AGENT_PROVIDER" "$AGENT_BASE_URL")"
+      )
+      if [[ -z "$_has_anthropic_auth" ]]; then
+        provider_env+=(-e "ANTHROPIC_API_KEY=dummy")
+      fi
+      ;;
+    *)
+      echo "Error: unknown AGENT_PROVIDER: $AGENT_PROVIDER" >&2
+      echo "Supported: ollama, lmstudio, openrouter, openai, anthropic, custom-openai-compatible, custom-anthropic-compatible" >&2
+      exit 2
+      ;;
+  esac
+
+  # Claude Code cannot reach OpenAI-compatible backends — reject early with a
+  # clear message instead of letting the agent fail opaquely.
+  require_supported_provider "$agent_kind" "$AGENT_PROVIDER" || exit 2
+
+  # A claude image on a custom-anthropic-compatible backend routes through the
+  # in-container anthropic-strip-proxy (see anthropic_base_url_for, which
+  # already pointed ANTHROPIC_BASE_URL at it). clawx-init starts the proxy at
+  # container boot; here we hand it the freshly resolved backend URL and
+  # confirm it is up before claude connects. The pre-exec `podman exec` probes
+  # mirror the OPENAI_API_KEY probe above.
+  if [[ "$agent_kind" == "claude" && "$AGENT_PROVIDER" == "custom-anthropic-compatible" ]]; then
+    printf '%s' "$AGENT_BASE_URL" \
+      | podman exec -i --user 1000:1000 "$container_name" \
+          anthropic-strip-proxy --set-upstream
+    if ! podman exec --user 1000:1000 "$container_name" \
+           anthropic-strip-proxy --ping >/dev/null 2>&1; then
+      podman exec -d --user 1000:1000 "$container_name" anthropic-strip-proxy
+      podman exec --user 1000:1000 "$container_name" \
+        anthropic-strip-proxy --ping --wait 3 >/dev/null 2>&1 || {
+        echo "Error: anthropic-strip-proxy did not come up in '$container_name'." >&2
+        exit 1
+      }
+    fi
+  fi
+
+  # build_cli_args writes the agent argv into this array (declared here so the
+  # out-parameter is visible at the call site, not just in the helper).
+  local cli_args=()
+  build_cli_args "$agent_kind" "$AGENT_MODEL" "${args[@]}" || exit 2
+
+  exec podman "${exec_args[@]}" \
+    -e "AGENT_PROVIDER=$AGENT_PROVIDER" \
+    -e "AGENT_BASE_URL=$AGENT_BASE_URL" \
+    -e "AGENT_MODEL=$AGENT_MODEL" \
+    "${provider_env[@]}" \
+    -w /home/clawx/workspaces \
+    "$container_name" \
+    /usr/local/bin/agent "${cli_args[@]}"
+}
+
+# Run main only when executed, not when sourced — tools/unit-tests.sh sources
+# this file to reach the pure helpers above.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi

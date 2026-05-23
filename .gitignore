@@ -1,5 +1,9 @@
 recreate_vm.sh
-update-leash-ca.sh
 .claude/scheduled_tasks.lock
 .claude/settings.local.json
-PLAN_claude-code-third-agent.md
+
+# Python bytecode cache (created when tools/test-gen-opencode-config.py
+# imports the generator).
+__pycache__/
+*.pyc
+

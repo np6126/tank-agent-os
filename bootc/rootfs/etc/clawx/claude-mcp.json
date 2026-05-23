@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "service-gator": { "type": "http", "url": "http://service-gator:8080/mcp" },
+    "searxng":       { "type": "http", "url": "http://mcp-searxng:3000/mcp" },
+    "docs-mcp":      { "type": "http", "url": "http://docs-mcp:6280/mcp" },
+    "llm-wiki":      { "type": "http", "url": "http://llm-wiki:3100/mcp" }
+  }
+}

@@ -1,2 +1,2 @@
-tank-claw-os demo build 2026-05-06
-claw-code rootless Podman appliance with bootc updates
+tank-agent-os
+Fedora bootc appliance for sandboxed AI coding agents

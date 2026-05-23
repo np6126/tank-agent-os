@@ -4,9 +4,11 @@
 ARG FEDORA_BOOTC_IMAGE=quay.io/fedora/fedora-bootc
 ARG FEDORA_BOOTC_REF=latest
 # One agent per image, no runtime switching. Valid AGENT_KIND: opencode,
-# claw. opencode is the default and recommended runtime. claw-code is
-# experimental — its MCP client needs the mcp-proxy bridge and a local
-# patch (see bootc/patches/claw-fix-mcp-stdio-framing.patch).
+# claw, claude. opencode is the default and recommended runtime. claw-code
+# is experimental — its MCP client needs the mcp-proxy bridge and a local
+# patch (see bootc/patches/claw-fix-mcp-stdio-framing.patch). claude is the
+# upstream Anthropic Claude Code native binary and speaks only the Anthropic
+# protocol (no local OpenAI-compatible backends — see docs/model-providers.md).
 ARG AGENT_KIND=opencode
 ARG CLAW_CODE_REPO=https://github.com/ultraworkers/claw-code.git
 ARG CLAW_CODE_REF=f8e1bb7262b261da1ee6bfcd461bfc5b676f6a6d
@@ -29,6 +31,20 @@ ARG OPENCODE_ASSET=opencode-linux-x64.tar.gz
 # arm64 build requires OPENCODE_ASSET=opencode-linux-arm64.tar.gz and
 # a different SHA — override both with --build-arg.
 ARG OPENCODE_SHA256=f0734928d5df360777f51f807df18b28c1d0c006f806ad0bd35a2420fabd0835
+# Claude Code: native single-file binaries from downloads.claude.ai. With the
+# version pinned, the download URL is fully determined — no script is run.
+# Trust surface == opencode, plus GPG verification of the signed manifest.
+ARG CLAUDE_CODE_RELEASE_BASE=https://downloads.claude.ai/claude-code-releases
+# Exact version. Must be >= 2.1.89 — releases from there on ship a signed
+# manifest. Directly addressable as {BASE}/{REF}/... — no channel resolution.
+ARG CLAUDE_CODE_REF=2.1.140
+# linux-x64 is the glibc build, correct for the Fedora clawx-runtime
+# (linux-x64-musl would be wrong).
+ARG CLAUDE_CODE_PLATFORM=linux-x64
+# SHA-256 of the upstream linux-x64 binary, taken from the GPG-verified
+# manifest for CLAUDE_CODE_REF. Empty = record only. arm64 needs
+# CLAUDE_CODE_PLATFORM=linux-arm64 and a different SHA — override both.
+ARG CLAUDE_CODE_SHA256=807a5d6ca063f5e03e4b7283934036a3122723b28c28e1a6978e98cf2d43d0b5
 # Pinned to a digest so a tag move cannot silently change the running image.
 # Upstream moved to LobsterTrap/service-gator; the cgwalters namespace is no
 # longer rebuilt. Track LobsterTrap going forward.
@@ -52,7 +68,7 @@ ARG DOCS_MCP_REF=sha256:a00a30040bac410678c175dcf8b60f5fed6357cf761bcc5a63ab5638
 # it needs Gitea service-account + token setup first; see
 # docs/llm-wiki.md and audits/llm-wiki-server-2026-05-20.md.
 ARG MCP_LLM_WIKI_IMAGE=ghcr.io/np6126/mcp-llm-wiki
-ARG MCP_LLM_WIKI_REF=sha256:ef604a9a320e511a99484afa96519ac8a4d72ec8e606cfb82185027eee5bcf90
+ARG MCP_LLM_WIKI_REF=sha256:e7756e6028ec08c88455d02c3cda16a1b85cf221ae6b0f5b1e00e8030ce693c2
 # Build-time opt-in for agent persistent memory. Default OFF: agent memory
 # writes go to the container's ephemeral overlay-FS and are lost on
 # container recreate. Set to "true" at image build to symlink the agent's
@@ -175,6 +191,80 @@ RUN set -eux; \
     printf '  binary:   %s\n' "${binary_sha}"; \
     rm -f /tmp/opencode.tar.gz
 
+FROM ${FEDORA_BOOTC_IMAGE}:${FEDORA_BOOTC_REF} AS claude-builder
+
+ARG CLAUDE_CODE_RELEASE_BASE
+ARG CLAUDE_CODE_REF
+ARG CLAUDE_CODE_PLATFORM
+ARG CLAUDE_CODE_SHA256
+
+# Anthropic's Claude Code release-signing key, checked into the repo as the
+# trust anchor — the build verifies the signed manifest against it, so no key
+# is fetched at build time. The fingerprint is hard-checked below; a swapped
+# key file fails the build.
+COPY keys/ /build/keys/
+
+# Native single-file binary: download, GPG-verify the signed manifest, then
+# verify the binary against both the manifest checksum and the in-repo pin.
+# No tar — the distribution ships a raw binary. gnupg2 + python3 are builder-
+# only (this stage is discarded; they never reach the bootc image).
+RUN set -eux; \
+    dnf -y install gnupg2 python3; \
+    export GNUPGHOME=/tmp/claude-gpg; \
+    install -d -m 0700 "${GNUPGHOME}"; \
+    gpg --quiet --import /build/keys/claude-code-release.asc; \
+    fpr=$(gpg --with-colons --fingerprint \
+            "Anthropic Claude Code Release Signing" \
+          | awk -F: '/^fpr:/ {print $10; exit}'); \
+    expected_fpr=31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE; \
+    if [ "${fpr}" != "${expected_fpr}" ]; then \
+      printf '\nERROR: Claude Code signing-key fingerprint mismatch.\n' >&2; \
+      printf '  expected: %s\n' "${expected_fpr}" >&2; \
+      printf '  actual:   %s\n' "${fpr}" >&2; \
+      exit 1; \
+    fi; \
+    rel="${CLAUDE_CODE_RELEASE_BASE}/${CLAUDE_CODE_REF}"; \
+    curl -fsSL -o /tmp/manifest.json     "${rel}/manifest.json"; \
+    curl -fsSL -o /tmp/manifest.json.sig "${rel}/manifest.json.sig"; \
+    # Verify the manifest signature before fetching the large binary, so a
+    # bad signature fails the build without paying the download.
+    gpg --batch --verify /tmp/manifest.json.sig /tmp/manifest.json; \
+    curl -fsSL -o /tmp/claude            "${rel}/${CLAUDE_CODE_PLATFORM}/claude"; \
+    manifest_sha=$(python3 -c \
+      'import json,sys; print(json.load(open("/tmp/manifest.json"))["platforms"][sys.argv[1]]["checksum"])' \
+      "${CLAUDE_CODE_PLATFORM}"); \
+    actual_sha=$(sha256sum /tmp/claude | awk '{print $1}'); \
+    install -d -m 0755 /usr/local/share/tank-os; \
+    printf '\nagent build summary (claude-code):\n'; \
+    printf '  source:   %s @ %s\n' "${CLAUDE_CODE_RELEASE_BASE}" "${CLAUDE_CODE_REF}"; \
+    printf '  platform: %s\n' "${CLAUDE_CODE_PLATFORM}"; \
+    printf '  manifest: GPG signature verified (Anthropic Claude Code Release Signing)\n'; \
+    printf '  sha256:   %s  (binary)\n' "${actual_sha}"; \
+    if [ "${actual_sha}" != "${manifest_sha}" ]; then \
+      printf '\nERROR: Claude Code binary does not match the signed manifest checksum.\n' >&2; \
+      printf '  manifest: %s\n' "${manifest_sha}" >&2; \
+      printf '  actual:   %s\n' "${actual_sha}" >&2; \
+      exit 1; \
+    fi; \
+    printf '  status:   matches GPG-verified manifest checksum\n'; \
+    if [ -n "${CLAUDE_CODE_SHA256}" ]; then \
+      if [ "${actual_sha}" != "${CLAUDE_CODE_SHA256}" ]; then \
+        printf '\nERROR: Claude Code binary SHA-256 mismatch.\n' >&2; \
+        printf '  expected: %s\n' "${CLAUDE_CODE_SHA256}" >&2; \
+        printf '  actual:   %s\n' "${actual_sha}" >&2; \
+        printf '\nSee docs/build.md for the hash-pinning workflow.\n' >&2; \
+        exit 1; \
+      fi; \
+      printf '  status:   verified against pinned CLAUDE_CODE_SHA256\n'; \
+    else \
+      printf '  status:   recorded only (CLAUDE_CODE_SHA256 not set)\n'; \
+    fi; \
+    install -D -m 0755 /tmp/claude /usr/local/bin/agent; \
+    printf '%s  /usr/local/bin/agent\n' "${actual_sha}" \
+      > /usr/local/share/tank-os/agent.sha256; \
+    chmod 0644 /usr/local/share/tank-os/agent.sha256; \
+    rm -rf /tmp/claude /tmp/manifest.json /tmp/manifest.json.sig "${GNUPGHOME}"
+
 FROM ${FEDORA_BOOTC_IMAGE}:${FEDORA_BOOTC_REF}
 
 # Re-declare so this stage inherits the values from the top-level ARG block.
@@ -211,6 +301,8 @@ RUN set -eux; \
       qemu-guest-agent \
       shadow-utils \
       sudo \
+      tar \
+      unzip \
       vim-enhanced; \
     dnf clean all; \
     rm -rf /var/cache/dnf /var/log/dnf*; \
@@ -229,14 +321,16 @@ RUN set -eux; \
 
 COPY rootfs/ /
 # ARG expansion in --from= is broken on older Buildah/Podman versions, so we
-# COPY both builder outputs and let a RUN step pick the one matching AGENT_KIND.
+# COPY all three builder outputs and let a RUN step pick the one matching AGENT_KIND.
 COPY --from=claw-builder     /usr/local/bin/agent                /opt/agent-candidates/claw
 COPY --from=claw-builder     /usr/local/share/tank-os/agent.sha256 /opt/agent-candidates/claw.sha256
 COPY --from=opencode-builder /usr/local/bin/agent                /opt/agent-candidates/opencode
 COPY --from=opencode-builder /usr/local/share/tank-os/agent.sha256 /opt/agent-candidates/opencode.sha256
+COPY --from=claude-builder   /usr/local/bin/agent                /opt/agent-candidates/claude
+COPY --from=claude-builder   /usr/local/share/tank-os/agent.sha256 /opt/agent-candidates/claude.sha256
 
 RUN set -eux; \
-    case "${AGENT_KIND}" in claw|opencode) ;; *) \
+    case "${AGENT_KIND}" in claw|opencode|claude) ;; *) \
       echo "Unsupported AGENT_KIND: ${AGENT_KIND}" >&2; exit 2 ;; esac; \
     install -D -m 0755 "/opt/agent-candidates/${AGENT_KIND}" /usr/local/bin/agent; \
     install -D -m 0644 "/opt/agent-candidates/${AGENT_KIND}.sha256" \
@@ -244,17 +338,17 @@ RUN set -eux; \
     rm -rf /opt/agent-candidates; \
     printf '%s\n' "${AGENT_KIND}" > /etc/clawx/agent.kind; \
     chmod 0644 /etc/clawx/agent.kind; \
-    # opencode comes with web-search wired in its config — auto-enable the
-    # SearXNG stack so it actually works out of the box. claw images keep
+    # opencode and claude come with web search wired in — auto-enable the
+    # SearXNG + docs-mcp stack so it works out of the box. claw images keep
     # the Quadlets but leave them unenabled (operator's choice).
-    if [ "${AGENT_KIND}" = "opencode" ]; then \
+    case "${AGENT_KIND}" in opencode|claude) \
       printf '\n[Install]\nWantedBy=default.target\n' \
         >> /etc/containers/systemd/users/1000/searxng.container; \
       printf '\n[Install]\nWantedBy=default.target\n' \
         >> /etc/containers/systemd/users/1000/mcp-searxng.container; \
       printf '\n[Install]\nWantedBy=default.target\n' \
-        >> /etc/containers/systemd/users/1000/docs-mcp.container; \
-    fi
+        >> /etc/containers/systemd/users/1000/docs-mcp.container ;; \
+    esac
 
 # Substitute version-pin ARGs into the Quadlet unit files that were just copied
 # from rootfs/. The rootfs/ copies carry placeholder values; the ARG defaults at
@@ -292,14 +386,21 @@ RUN set -eux; \
       /usr/libexec/tank-os/bootstrap-service-gator \
       /usr/libexec/tank-os/gen-opencode-config \
       /usr/libexec/tank-os/gen-searxng-settings \
+      /usr/libexec/tank-os/provision-toolchains \
       /usr/libexec/tank-os/setup-clawx-nftables \
       /usr/libexec/tank-os/sync-podman-secrets; \
+    # Bake opencode-config.json from gen-opencode-config so the shipped file
+    # cannot drift from the generator (which also re-runs at every boot).
+    /usr/libexec/tank-os/gen-opencode-config --print > /etc/clawx/opencode-config.json; \
     chmod 0644 \
       /usr/share/tank-os/agent-config.env.example \
       /usr/share/tank-os/scopes.json.example \
+      /usr/share/tank-os/toolchains.conf.example \
       /etc/clawx/CLAUDE.md \
       /etc/clawx/opencode-config.json \
       /etc/clawx/claw-settings.json \
+      /etc/clawx/claude-mcp.json \
+      /etc/clawx/claude-managed-settings.json \
       /etc/clawx/searxng-settings.yml.template; \
     chmod 0440 /etc/sudoers.d/clawx; \
     chown -R clawx:clawx /var/home/clawx; \
