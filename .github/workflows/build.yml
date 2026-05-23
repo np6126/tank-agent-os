@@ -13,7 +13,7 @@ jobs:
   guard:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: SELinux MCS shared-mount guard
         run: bash tools/check-selinux-mcs.sh
@@ -22,7 +22,7 @@ jobs:
     needs: guard
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
