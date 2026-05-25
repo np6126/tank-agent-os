@@ -1,0 +1,4 @@
+# Keep transient build artefacts out of the podman build context.
+__pycache__/
+*.pyc
+*.pyo

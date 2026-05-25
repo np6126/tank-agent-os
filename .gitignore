@@ -7,4 +7,3 @@ recreate_vm.sh
 __pycache__/
 *.pyc
 
-local/

@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# Build an NSS user database for the docs-mcp container so Chromium trusts
+# the egress MITM proxy CA.
+#
+# docs-mcp-server uses Playwright + Chromium to render JS-heavy doc sites.
+# Chromium on Linux reads the user NSS DB at $HOME/.pki/nssdb and ignores
+# NODE_EXTRA_CA_CERTS / SSL_CERT_FILE / the system OpenSSL bundle. The
+# upstream image (node:22-trixie-slim) ships libnss3 but no certutil and
+# no writable trust path — so we cannot inject the CA from inside the
+# container. Instead we build the DB on the host (where `nss-tools`
+# provides certutil) and bind-mount it read-only at /home/node/.pki/nssdb.
+#
+# Wiring: sync-podman-secrets adds the Volume + this ExecStartPre to the
+# docs-mcp drop-in only when proxy_ca_cert is present.
+set -euo pipefail
+
+clawx_home="${HOME:-/var/home/clawx}/.clawx"
+nssdb_dir="$clawx_home/docs-mcp-nssdb"
+
+if ! podman secret inspect proxy_ca_cert >/dev/null 2>&1; then
+    rm -rf "$nssdb_dir"
+    exit 0
+fi
+
+proxy_ca=$(podman secret inspect proxy_ca_cert --showsecret --format '{{.SecretData}}' 2>/dev/null || true)
+if [[ -z "$proxy_ca" ]]; then
+    rm -rf "$nssdb_dir"
+    exit 0
+fi
+
+if ! command -v certutil >/dev/null 2>&1; then
+    echo "bootstrap-docs-mcp-nssdb: certutil not found (need nss-tools); skipping" >&2
+    exit 0
+fi
+
+umask 022
+mkdir -p "$nssdb_dir"
+
+tmp_pem=$(mktemp /tmp/leash-ca.XXXXXX.pem)
+trap 'rm -f "$tmp_pem"' EXIT
+printf '%s\n' "$proxy_ca" > "$tmp_pem"
+
+# Initialize the DB on first run; subsequent runs reuse the existing DB.
+if ! certutil -L -d "sql:$nssdb_dir" >/dev/null 2>&1; then
+    certutil -N -d "sql:$nssdb_dir" --empty-password
+fi
+
+# Replace any prior leash-proxy entry, then add the current one. Trust
+# flags "TC,," = trusted CA for TLS server certs only (no email, no code
+# signing). docs-mcp's Chromium has no use for the other slots, and
+# pinning the flags tightens the trust grant against future feature use.
+certutil -D -d "sql:$nssdb_dir" -n leash-proxy 2>/dev/null || true
+certutil -A -d "sql:$nssdb_dir" -n leash-proxy -t "TC,," -i "$tmp_pem"
+
+# Container-side reader is uid 1000 inside the user namespace, which maps
+# to host uid 100999 (not clawx). The NSS DB contains only public trust
+# anchors, so widening to world-readable is safe and avoids a chown step
+# that would otherwise have to happen with podman's userns mapping.
+chmod 0755 "$nssdb_dir"
+chmod 0644 "$nssdb_dir"/* 2>/dev/null || true

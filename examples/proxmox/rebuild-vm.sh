@@ -8,7 +8,10 @@
 #   --image IMAGE     Container image to deploy (required, or set TANK_IMAGE env var)
 #   --storage POOL    Proxmox storage pool for the VM disk (default: local-lvm)
 #   --bridge BRIDGE   Network bridge to attach to (default: vmbr1)
-#   --memory MB       RAM in MB (default: 8192)
+#   --memory MB       RAM in MB (default: 6144)
+#   --balloon MB      Balloon floor in MB. 0 disables ballooning (default: 3072)
+#   --ip IPV4         Static IPv4 the seed ISO wires onto ens18 (default: 10.10.10.2).
+#                     Gateway 10.10.10.1 is the leash proxy and is fixed.
 #   --cores N         CPU cores (default: 2)
 #   --disk-size SIZE  Disk size, passed to qm resize (default: 30G)
 #   --user-data FILE  Path to cloud-init user-data file (required)
@@ -31,7 +34,9 @@ set -euo pipefail
 IMAGE=""  # required: set via --image or TANK_IMAGE env var
 STORAGE="local-lvm"
 BRIDGE="vmbr1"
-MEMORY=8192
+MEMORY=6144
+BALLOON=3072
+IP="10.10.10.2"
 CORES=2
 DISK_SIZE="30G"
 USER_DATA=""  # required: set via --user-data
@@ -52,6 +57,8 @@ while [[ $# -gt 0 ]]; do
         --storage)    STORAGE="$2";    shift 2 ;;
         --bridge)     BRIDGE="$2";     shift 2 ;;
         --memory)     MEMORY="$2";     shift 2 ;;
+        --balloon)    BALLOON="$2";    shift 2 ;;
+        --ip)         IP="$2";         shift 2 ;;
         --cores)      CORES="$2";      shift 2 ;;
         --disk-size)  DISK_SIZE="$2";  shift 2 ;;
         --user-data)    USER_DATA="$2";    shift 2 ;;
@@ -110,14 +117,14 @@ fi
 printf 'instance-id: clawx-%s\nlocal-hostname: clawx\n' "$(date +%s)" > "$CIDATA/meta-data"
 # network-config is processed by cloud-init-local (before NetworkManager starts),
 # ensuring the static IP is configured before NetworkManager-wait-online runs.
-cat > "$CIDATA/network-config" <<'NETCONF'
+cat > "$CIDATA/network-config" <<NETCONF
 version: 2
 ethernets:
   id0:
     match:
       name: "en*"
     addresses:
-      - 10.10.10.2/24
+      - ${IP}/24
     routes:
       - to: default
         via: 10.10.10.1
@@ -138,11 +145,26 @@ if qm status "$VMID" &>/dev/null; then
     qm destroy "$VMID" --purge
 fi
 
+# `qm destroy --purge` returns 0 even when `lvremove` fails to drop one of
+# the VM's logical volumes (e.g. a stale DM mapping holds it "in use").
+# If we proceed, `qm importdisk` allocates `vm-${VMID}-disk-1` instead of
+# disk-0 and a hardcoded `--scsi0 ...-disk-0` would silently attach the
+# *old* disk to scsi0 — the VM then boots the previous deployment and the
+# downstream digest check fails after a 12-minute roundtrip.
+LEFTOVER="$(lvs --noheadings -o lv_name,vg_name 2>/dev/null | awk -v v="$VMID" '$1 ~ "^vm-" v "-disk-" {print $2"/"$1}')"
+if [[ -n "$LEFTOVER" ]]; then
+    echo "ERROR: qm destroy --purge left behind logical volumes for VM $VMID:" >&2
+    echo "$LEFTOVER" >&2
+    echo "Fix: stop holders / lvremove manually before re-running." >&2
+    exit 1
+fi
+
 # ── create VM ─────────────────────────────────────────────────────────────────
 echo "==> Creating VM $VMID ..."
 qm create "$VMID" \
     --name "tank-agent-os-${VMID}" \
     --memory "$MEMORY" \
+    --balloon "$BALLOON" \
     --cores "$CORES" \
     --cpu host \
     --net0 "virtio,bridge=${BRIDGE}" \
@@ -152,9 +174,22 @@ qm create "$VMID" \
     --agent enabled=1 \
     --ostype l26
 
-qm importdisk "$VMID" "$BUILD_DIR/qcow2/disk.qcow2" "$STORAGE"
+# Capture the imported-disk reference from `qm importdisk` output instead of
+# assuming it lands as `disk-0`. Belt-and-braces companion to the leftover-LV
+# check above: even if some future code path leaves a stray LV, we'll attach
+# the *new* image we just imported, not whatever the old slot held.
+IMPORT_LOG="$(mktemp)"
+qm importdisk "$VMID" "$BUILD_DIR/qcow2/disk.qcow2" "$STORAGE" 2>&1 | tee "$IMPORT_LOG"
+IMPORTED_DISK="$(grep -oE "successfully imported disk '[^']+'" "$IMPORT_LOG" | tail -1 | sed -E "s/.*'([^']+)'.*/\1/")"
+rm -f "$IMPORT_LOG"
+if [[ -z "$IMPORTED_DISK" ]]; then
+    echo "ERROR: could not parse imported disk reference from qm importdisk output" >&2
+    exit 1
+fi
+echo "==> Imported disk: $IMPORTED_DISK"
+
 qm set "$VMID" \
-    --scsi0 "${STORAGE}:vm-${VMID}-disk-0,discard=on" \
+    --scsi0 "${IMPORTED_DISK},discard=on" \
     --ide2 "local:iso/tank-agent-os-seed-${VMID}.iso,media=cdrom"
 
 qm resize "$VMID" scsi0 "$DISK_SIZE"
