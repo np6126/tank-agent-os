@@ -63,7 +63,12 @@ main() {
     fi
     # create-or-replace: rm-then-create works on every podman version
     podman secret rm "$secret_name" >/dev/null 2>&1 || true
-    if podman secret create "$secret_name" - ; then
+    # Strip trailing newlines from the piped value. cat-from-file,
+    # heredocs, and command substitution all reliably append one, and a
+    # trailing \n inside an API-token secret turns into "Invalid API
+    # key" once it hits the upstream service.
+    secret_value=$(cat)
+    if printf '%s' "$secret_value" | podman secret create "$secret_name" - ; then
       echo "stored secret: $secret_name"
     else
       echo "clawx setup: could not store secret '$secret_name'" >&2

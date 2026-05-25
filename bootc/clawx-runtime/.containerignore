@@ -1,0 +1,6 @@
+# Keep transient build artefacts out of the podman build context.
+# tools/test-strip-proxy.py imports anthropic-strip-proxy from this dir,
+# which creates __pycache__/ here.
+__pycache__/
+*.pyc
+*.pyo
