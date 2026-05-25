@@ -44,8 +44,12 @@ Volume=/etc/clawx/opencode-config.json:/home/clawx/.clawx/xdg-config/opencode/co
 # the claw-side equivalent of the mcp block in opencode-config.json. opencode
 # ignores it. claw-code's MCP client only supports the stdio transport, so the
 # entries spawn `mcp-proxy` (baked into clawx-runtime) to bridge stdio to each
-# HTTP MCP server on the bridge. Listing all four unconditionally is fine — a
-# server whose container is down fails the connection soft, like opencode.
+# HTTP MCP server on the bridge. Unlike opencode, claw-code blocks the first
+# prompt until every listed bridge has completed its streamable-HTTP handshake,
+# so an entry whose backend container is not running stalls the agent for
+# minutes (mcp-proxy retries the DNS NXDOMAIN inside clawx-isolated.network).
+# The Containerfile strips the not-auto-started opt-in MCP entries for the
+# claw AGENT_KIND build (see the claw arm of the case statement there).
 Volume=/etc/clawx/claw-settings.json:/home/clawx/.claw/settings.json:ro
 # claude-code MCP config. claude-code speaks streamable-HTTP MCP natively, so
 # these entries point straight at the bridge endpoints — no mcp-proxy (unlike

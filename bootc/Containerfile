@@ -295,6 +295,7 @@ RUN set -eux; \
     dnf -y install \
       cloud-init \
       nftables \
+      nss-tools \
       openssh-server \
       podman \
       python3 \
@@ -348,6 +349,22 @@ RUN set -eux; \
         >> /etc/containers/systemd/users/1000/mcp-searxng.container; \
       printf '\n[Install]\nWantedBy=default.target\n' \
         >> /etc/containers/systemd/users/1000/docs-mcp.container ;; \
+    claw) \
+      # Strip the not-auto-started opt-in MCP entries from claw-settings.json
+      # on claw images. claw-code spawns one mcp-proxy stdio bridge per entry
+      # at agent startup and blocks the first prompt until each bridge has
+      # completed its streamable-HTTP handshake; an entry whose backend
+      # container is not running stalls the bridge (DNS NXDOMAIN inside
+      # clawx-isolated.network -> repeated retries inside mcp-proxy)
+      # for minutes. Operators who enable mcp-searxng or docs-mcp manually
+      # must add the matching entries back; the entries in the rootfs/
+      # template are the documented form.
+      python3 -c '\
+import json, sys; \
+p = "/etc/clawx/claw-settings.json"; \
+c = json.load(open(p)); \
+[c["mcpServers"].pop(k, None) for k in ("docs-mcp", "searxng")]; \
+open(p, "w").write(json.dumps(c, indent=2) + "\n")' ;; \
     esac
 
 # Substitute version-pin ARGs into the Quadlet unit files that were just copied
@@ -383,6 +400,7 @@ RUN set -eux; \
       /usr/local/bin/tank-os-version \
       /usr/local/bin/tank-clawx-secrets \
       /usr/libexec/tank-os/bootstrap-clawx \
+      /usr/libexec/tank-os/bootstrap-docs-mcp-nssdb \
       /usr/libexec/tank-os/bootstrap-service-gator \
       /usr/libexec/tank-os/gen-opencode-config \
       /usr/libexec/tank-os/gen-searxng-settings \

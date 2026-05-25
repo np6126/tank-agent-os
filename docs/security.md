@@ -181,6 +181,55 @@ commands. That mitigation reduces the surface but doesn't eliminate it,
 which is why the default stays off. See [memory.md](memory.md) for the
 threat-model write-up and how to wipe memory.
 
+### Layer 5 — Workspace Configuration Injection
+
+Modern coding agents discover MCP servers, hooks, and per-project
+settings from configuration files in their working directory — files
+like `.mcp.json` or `.claude/settings.json`. Because those files
+specify which child processes to launch at agent startup, their
+contents are functionally code execution. An agent that loads either
+from a cloned untrusted repo therefore exposes a remote-code-execution
+channel disguised as configuration.
+
+The Cline "Clinejection" incident (Feb 2026) demonstrated this: a
+`.mcp.json` shipped inside a repo pointed at a malicious MCP server
+binary; the agent loaded it on first contact and the malicious server
+exfiltrated workspace contents.
+
+tank-agent-os defangs the workspace-config channel at the
+agent-invocation layer, per agent:
+
+- **Claude Code** — `clawx` (the wrapper that starts the agent) always
+  passes two hardening flags:
+  - `--mcp-config /etc/clawx/claude-mcp.json --strict-mcp-config` —
+    use only the root-owned MCP config; ignore any `.mcp.json` the
+    workspace brings in.
+  - `--setting-sources user` — load only user-level and the always-on
+    managed settings; never the project-level `.claude/settings.json`
+    that could inject SessionStart hooks (= code execution at agent
+    start).
+
+  The `CLAUDE.md` instruction file remains workspace-readable and is
+  a separate subsystem; see [Layer 4](#layer-4--prompt-injection-hardening).
+- **claw-code** — built with `claw-lock-project-config.patch` applied
+  (`bootc/patches/`). The patch makes `ConfigLoader::discover` skip any
+  config entry whose source is not `User`, so workspace- and
+  local-scoped settings files are ignored even if claw discovers them.
+
+The MCP config itself (`/etc/clawx/claude-mcp.json`) is mounted
+read-only into the container and owned by root on the host; the agent
+has no path to modify it. New MCP servers can only enter through the
+image build pipeline, which routes them through the
+[MCP Adoption Gate](#mcp-adoption-gate). The Adoption Gate covers what
+ships *in* the image; Layer 5 covers what the workspace tries to
+inject *at run time*.
+
+The hardening is per-agent because the threat is per-agent: each agent
+has its own config-discovery convention, and there is no single
+OS-level kill-switch that covers all of them. The deployments above
+are covered by `tools/unit-tests.sh`; any change to the wrapper's
+`build_cli_args()` must preserve these flags.
+
 ## Hardened Host Configuration
 
 ### Sudoers Policy

@@ -126,8 +126,15 @@ else
 fi
 
 # ── MCP servers ─────────────────────────────────────────────────────
+# 60s, not 30: `agent mcp list` connects to every configured MCP server in
+# sequence, and a cold first call after image start can take well over 30s
+# even though every backend is fine (Anthropic claude probes each upstream
+# with a streamable-HTTP handshake). Print the captured output on failure
+# so the reason ("timeout" vs the actual stderr) is recoverable from logs.
 if ((container_up)); then
-  if mcp_out=$(timeout 30 podman exec "$container_name" /usr/local/bin/agent mcp list 2>&1); then
+  mcp_out=$(timeout 60 podman exec "$container_name" /usr/local/bin/agent mcp list 2>&1)
+  mcp_rc=$?
+  if [[ $mcp_rc -eq 0 ]]; then
     # Best-effort scan of the human-facing `mcp list` output for a failure
     # marker — heuristic, hence WARN-only; 'clawx mcp list' is authoritative.
     if grep -qiE 'fail|✗' <<<"$mcp_out"; then
@@ -135,8 +142,12 @@ if ((container_up)); then
     else
       ok "MCP servers: 'agent mcp list' reports no failures"
     fi
+  elif [[ $mcp_rc -eq 124 ]]; then
+    bad "MCP: 'agent mcp list' timed out after 60s"
+    echo "$mcp_out" | sed 's/^/        /'
   else
-    bad "MCP: 'agent mcp list' failed or timed out"
+    bad "MCP: 'agent mcp list' exited $mcp_rc"
+    echo "$mcp_out" | sed 's/^/        /'
   fi
 else
   wn "MCP servers: skipped — clawx container is down"

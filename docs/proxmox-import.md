@@ -101,7 +101,8 @@ in the next step.
 ```bash
 qm create <vmid> \
   --name tank-agent-os \
-  --memory 8192 \
+  --memory 6144 \
+  --balloon 3072 \
   --cores 2 \
   --cpu host \
   --net0 virtio,bridge=vmbr1 \
